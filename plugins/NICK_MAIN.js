@@ -12,8 +12,7 @@ async (conn, mek, m, { from, quoted, body, isCmd, command, args, q, isGroup, sen
     try {
         const startTime = Date.now()
         
-        const message = await conn.sendMessage(from, { text: '```⚡ Checking Latency...
-```' })
+        const message = await conn.sendMessage(from, { text: '```⚡ Checking Latency...```' })
         
         const endTime = Date.now()
         const ping = endTime - startTime
