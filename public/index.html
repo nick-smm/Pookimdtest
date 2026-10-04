@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NICK // ROOT ACCESS</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&display=swap" rel="stylesheet">
+    <style>
+        :root { --matrix: #00ff41; --bg: #050505; --surface: rgba(10, 10, 10, 0.8); }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: var(--bg); color: var(--matrix); font-family: 'JetBrains Mono', monospace; height: 100vh; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+
+        canvas { position: fixed; top: 0; left: 0; z-index: -1; opacity: 0.1; }
+
+        .container { width: 100%; max-width: 420px; padding: 20px; }
+        
+        /* The Card with Curved Edges */
+        .card { 
+            background: var(--surface); 
+            backdrop-filter: blur(15px); 
+            border: 1px solid var(--matrix); 
+            padding: 40px; 
+            border-radius: 30px; /* CURVED EDGES */
+            box-shadow: 0 0 30px rgba(0, 255, 65, 0.1);
+            position: relative;
+        }
+
+        /* Curved Input */
+        input { 
+            width: 100%; background: #000; border: 1px solid var(--matrix); 
+            color: var(--matrix); padding: 15px 20px; border-radius: 15px; /* CURVED EDGES */
+            font-family: 'JetBrains Mono', monospace; font-size: 1rem; outline: none; margin-top: 20px; 
+        }
+        
+        /* Curved Button */
+        button { 
+            width: 100%; background: var(--matrix); color: #000; border: none; 
+            padding: 15px; margin-top: 20px; cursor: pointer; font-weight: bold; 
+            border-radius: 15px; /* CURVED EDGES */
+            font-family: 'JetBrains Mono', monospace; transition: 0.3s; 
+        }
+        button:hover { box-shadow: 0 0 20px var(--matrix); transform: translateY(-2px); }
+
+        .output { margin-top: 25px; font-size: 0.85rem; text-align: center; }
+        .header { font-size: 0.6rem; text-align: center; margin-bottom: 20px; opacity: 0.7; }
+    </style>
+</head>
+<body>
+
+<canvas id="matrix"></canvas>
+
+<div class="container">
+    <div class="header">SYSTEM_STATUS: [SECURE] // CONNECTION: [ACTIVE]</div>
+    <div class="card">
+        <h2 style="font-size: 1.2rem; text-align: center;">NICK_ROOT_ACCESS</h2>
+        <input type="tel" id="phoneInput" placeholder="> ENTER_PHONE" maxlength="15">
+        <button onclick="getPairingCode()" id="pairBtn">PAIR REQUEST</button>
+        <div id="result" class="output"></div>
+    </div>
+</div>
+
+<script>
+    // Matrix Rain
+    const canvas = document.getElementById('matrix');
+    const ctx = canvas.getContext('2d');
+    canvas.height = window.innerHeight; canvas.width = window.innerWidth;
+    const chars = "0101XENO";
+    const fontSize = 16; const columns = canvas.width / fontSize;
+    const drops = Array(Math.floor(columns)).fill(1);
+    function draw() {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.05)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#00ff41"; ctx.font = fontSize + "px monospace";
+        drops.forEach((y, i) => {
+            const text = chars[Math.floor(Math.random() * chars.length)];
+            ctx.fillText(text, i * fontSize, y * fontSize);
+            if (y * fontSize > canvas.height && Math.random() > 0.975) drops[i] = 0;
+            drops[i]++;
+        });
+    }
+    setInterval(draw, 50);
+
+    async function getPairingCode() {
+        const res = document.getElementById('result');
+        const num = document.getElementById('phoneInput').value.replace(/[^0-9]/g, '');
+        if (num.length < 7) return res.innerHTML = "> ERROR: INVALID_INPUT";
+        
+        res.innerHTML = "> CONNECTING TO GATEWAY...";
+        try {
+            const data = await (await fetch(`/pair?number=${num}`)).json();
+            res.innerHTML = data.code ? `> ACCESS_GRANTED: [${data.code}]` : "> ERROR: CONNECTION_FAILED";
+        } catch (e) {
+            res.innerHTML = "> FATAL: GATEWAY_OFFLINE";
+        }
+    }
+</script>
+
+</body>
+</html>
