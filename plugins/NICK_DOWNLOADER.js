@@ -21,14 +21,18 @@ async (conn, mek, m, { from, prefix, q, reply }) => {
             return await reply("Invalid YouTube URL! Please provide a valid YouTube link.");
         }
 
-        const apiUrl = `https://eliteprotech-apis.zone.id/ytdown?url=${encodeURIComponent(q)}&format=mp4`;
+        // --- API CHANGED ---
+        const apiUrl = `https://api-aswin-sparky.koyeb.app/api/downloader/ytdl?url=${encodeURIComponent(q)}`;
         const { data } = await axios.get(apiUrl);
 
-        if (!data.success || !data.downloadURL) {
+        if (!data.status || !data.data) {
             return await reply("Failed to get download link. Try again later.");
         }
 
-        const { title, downloadURL: download_url } = data;
+        const title = data.data.title || "YouTube Video";
+        const download_url = data.data.video || data.data.url || data.data.mp4;
+
+        if (!download_url) return await reply("Could not extract video url.");
 
         await conn.sendMessage(from, {
             video: { url: download_url },
@@ -56,12 +60,12 @@ async (conn, mek, m, { from, prefix, q, reply }) => {
     try {
         await conn.sendMessage(from, { react: { text: "🔍", key: mek.key } });
 
-        // Search API
+        // Search API (Kept as is for searching functionality)
         const searchUrl = `https://eliteprotech-apis.zone.id/ytsearch?q=${encodeURIComponent(q)}`;
         const { data: searchRes } = await axios.get(searchUrl, { 
             timeout: 60000, 
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
         });
 
@@ -75,38 +79,34 @@ async (conn, mek, m, { from, prefix, q, reply }) => {
 
         await conn.sendMessage(from, { react: { text: "📥", key: mek.key } });
 
-        const downloadUrl = `https://eliteprotech-apis.zone.id/ytdown?url=${encodeURIComponent(videoUrl)}&format=mp3`;
-        const { data: downloadRes } = await axios.get(downloadUrl, { 
-            timeout: 60000, 
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-        });
+        // --- API CHANGED ---
+        const downloadUrl = `https://api-aswin-sparky.koyeb.app/api/downloader/ytdl?url=${encodeURIComponent(videoUrl)}`;
+        const { data: downloadRes } = await axios.get(downloadUrl, { timeout: 60000 });
 
-        if (!downloadRes.success || !downloadRes.downloadURL) {
+        if (!downloadRes.status || !downloadRes.data) {
             await conn.sendMessage(from, { react: { text: "❌", key: mek.key } });
             return await reply("Failed to get download link. Please try again later.");
         }
 
-        const downloadLink = downloadRes.downloadURL;
+        const downloadLink = downloadRes.data.audio || downloadRes.data.url || downloadRes.data.mp3;
+        
+        if(!downloadLink) {
+            return await reply("Failed to extract audio link.");
+        }
+
         const audioResponse = await axios.get(downloadLink, { 
             responseType: 'arraybuffer',
             timeout: 60000,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            },
-            maxContentLength: 50 * 1024 * 1024 // 50MB limit
+            maxContentLength: 50 * 1024 * 1024 
         });
 
         let finalAudio = Buffer.from(audioResponse.data);
         
-        // Basic validation
         if (finalAudio.length < 100000) {
             await conn.sendMessage(from, { react: { text: "❌", key: mek.key } });
-            return await reply("The downloaded file seems to be corrupted or too small. Please try another song.");
+            return await reply("The downloaded file seems to be corrupted. Please try another song.");
         }
 
-        // Metadata Injection and Re-encoding
         const tmpDir = path.join(process.cwd(), 'tmp');
         if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir);
 
@@ -120,13 +120,7 @@ async (conn, mek, m, { from, prefix, q, reply }) => {
         let hasThumb = false;
         if (thumbnail || config.thumbUrl) {
             try {
-                const imgRes = await axios.get(thumbnail || config.thumbUrl, { 
-                    responseType: 'arraybuffer',
-                    timeout: 10000,
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                    }
-                });
+                const imgRes = await axios.get(thumbnail || config.thumbUrl, { responseType: 'arraybuffer', timeout: 10000 });
                 await fs.writeFile(thumbPath, Buffer.from(imgRes.data));
                 hasThumb = true;
             } catch (e) {
@@ -146,11 +140,8 @@ async (conn, mek, m, { from, prefix, q, reply }) => {
         exec(ffmpegCmd, async (err) => {
             if (!err && fs.existsSync(outputPath)) {
                 finalAudio = await fs.readFile(outputPath);
-            } else if (err) {
-                console.error("FFmpeg Error:", err);
             }
             
-            // Cleanup
             if (fs.existsSync(inputPath)) await fs.remove(inputPath).catch(() => {});
             if (fs.existsSync(thumbPath)) await fs.remove(thumbPath).catch(() => {});
             
@@ -167,13 +158,7 @@ async (conn, mek, m, { from, prefix, q, reply }) => {
 
     } catch (e) {
         console.error("Song Error:", e.code || e.message);
-        let errMsg = "An error occurred. Please try again later.";
-        if (e.code === 'ECONNRESET' || e.message.includes('socket hang up')) {
-            errMsg = "Connection was reset by the server. Retrying might help.";
-        } else if (e.code === 'ETIMEDOUT' || e.message.includes('timeout')) {
-            errMsg = "The request timed out. The file might be too large or the server is slow.";
-        }
-        await reply(errMsg);
+        await reply("An error occurred. Please try again later.");
         await conn.sendMessage(from, { react: { text: "❌", key: mek.key } });
     }
 })
@@ -196,24 +181,21 @@ async (conn, mek, m, { from, prefix, q, reply }) => {
 
         await reply("Downloading Facebook video... ⏳");
 
-        const apiUrl = `https://api.giftedtech.co.ke/api/download/facebook?apikey=gifted&url=${encodeURIComponent(q)}`;
+        // --- API CHANGED ---
+        const apiUrl = `https://api-aswin-sparky.koyeb.app/api/downloader/fbdl?url=${encodeURIComponent(q)}`;
         const { data } = await axios.get(apiUrl);
 
-        if (!data.success || !data.result) {
+        if (!data.status || !data.data) {
             return await reply("Failed to get download link. Make sure the video is public and try again.");
         }
 
-        const { title, duration, hd_video, sd_video } = data.result;
+        // Check for common FB API response keys
+        const videoUrl = data.data.hd || data.data.sd || data.data.url || (Array.isArray(data.data) ? data.data[0]?.url : null);
+        const title = data.data.title || "Facebook Video";
 
-        // Prefer HD, fall back to SD
-        const videoUrl = hd_video || sd_video;
         if (!videoUrl) return await reply("No download link found for this video.");
 
-        const caption = `📘 *Facebook Video*\n\n` +
-            `📝 *Title:* ${title || "No title"}\n` +
-            `⏱️ *Duration:* ${duration || "Unknown"}\n` +
-            `📺 *Quality:* ${hd_video ? "HD" : "SD"}\n\n` +
-            `_Downloaded by ɴɪᴄᴋ ᴍᴅ ᴍɪɴɪ🪀_`;
+        const caption = `📘 *${title}*\n\n_Downloaded by ɴɪᴄᴋ ᴍᴅ ᴍɪɴɪ🪀_`;
 
         await conn.sendMessage(from, {
             video: { url: videoUrl },
@@ -249,7 +231,10 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             react: { text: "⏳", key: mek.key }
         });
 
-        const api = `https://api-aswin-sparky.koyeb.app/api/downloader/igdl?url=${encodeURIComponent(q)}`;
+        // ----------------- API IS ALREADY UPDATED -----------------
+        const url = q; 
+        const api = `https://api-aswin-sparky.koyeb.app/api/downloader/igdl?url=${encodeURIComponent(url)}`;
+        // ----------------------------------------------------------
 
         const { data } = await axios.get(api);
 
@@ -308,63 +293,27 @@ async (conn, mek, m, { from, prefix, q, reply }) => {
     try {
         await conn.sendMessage(from, { react: { text: "⏳", key: mek.key } });
 
-        const HEADERS = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Origin": "https://spotmate.online",
-            "Referer": "https://spotmate.online/en1",
-        };
+        // --- API CHANGED & SIMPLIFIED ---
+        const api = `https://api-aswin-sparky.koyeb.app/api/downloader/spotify?url=${encodeURIComponent(q)}`;
+        const { data } = await axios.get(api);
 
-        // 1. Get CSRF token and initial cookies
-        const mainPage = await axios.get("https://spotmate.online/en1", { headers: HEADERS });
-        const csrfToken = mainPage.data.match(/meta name="csrf-token" content="(.*?)"/)?.[1];
-        const cookies = mainPage.headers["set-cookie"]?.map(c => c.split(";")[0]).join("; ");
-
-        if (!csrfToken) {
-            return await reply("❌ Failed to initialize session (CSRF token missing). The site might be protected or changed.");
+        if (!data.status || !data.data) {
+            return await reply("❌ Failed to fetch Spotify track. Service might be down.");
         }
 
-        const ajaxHeaders = {
-            ...HEADERS,
-            "Content-Type": "application/json",
-            "X-CSRF-TOKEN": csrfToken,
-            "Cookie": cookies || ""
-        };
+        const downloadUrl = data.data.url || data.data.download;
+        const trackTitle = data.data.title || "Spotify Track";
+        const trackArtist = data.data.artist || "Unknown Artist";
+        const coverImage = data.data.cover || data.data.thumbnail || config.thumbUrl;
 
-        // 2. Fetch Track Data
-        const trackDataResponse = await axios.post("https://spotmate.online/getTrackData", 
-            { spotify_url: q }, 
-            { headers: ajaxHeaders }
-        ).catch(err => {
-            console.error("getTrackData error:", err.message);
-            return { error: true };
-        });
-
-        if (trackDataResponse.error || !trackDataResponse.data || trackDataResponse.status === 502) {
-            return await reply("❌ The Spotify downloader service is currently experiencing issues (502 Bad Gateway). Please try again later.");
-        }
-
-        const trackInfo = trackDataResponse.data;
-        const trackTitle = trackInfo.title || "Spotify Track";
-        const trackArtist = trackInfo.artist || "Unknown Artist";
-
-        // 3. Initiate Conversion
-        const convertResponse = await axios.post("https://spotmate.online/convert", 
-            { urls: q }, 
-            { headers: ajaxHeaders }
-        );
-
-        let downloadUrl = convertResponse.data?.url;
-        
         if (!downloadUrl) {
-            return await reply("❌ Failed to generate download link. Spotify's server might be busy or the song is unavailable.");
+            return await reply("❌ Failed to generate download link.");
         }
 
         await conn.sendMessage(from, { react: { text: "📥", key: mek.key } });
 
-        // 4. Download and Process with Tag Editor (FFmpeg)
         const audioResponse = await axios.get(downloadUrl, { 
             responseType: "arraybuffer",
-            headers: HEADERS,
             timeout: 120000 
         });
 
@@ -380,21 +329,20 @@ async (conn, mek, m, { from, prefix, q, reply }) => {
 
         await fs.writeFile(inputPath, buffer);
 
-        // Tag Editor Metadata
-        const title = "ɴɪᴄᴋ ᴍᴅ ᴍɪɴɪ";
-        const artist = "ɴɪᴄᴋ ᴍᴅ ᴍɪɴɪ";
-        const album = "ɴɪᴄᴋ ᴍᴅ ᴍɪɴɪ";
-
         let hasThumb = false;
-        if (trackInfo.image || config.thumbUrl) {
+        if (coverImage) {
             try {
-                const imgRes = await axios.get(trackInfo.image || config.thumbUrl, { responseType: 'arraybuffer' });
+                const imgRes = await axios.get(coverImage, { responseType: 'arraybuffer' });
                 await fs.writeFile(thumbPath, Buffer.from(imgRes.data));
                 hasThumb = true;
             } catch (e) {
                 console.error("Spotify Thumb Error:", e.message);
             }
         }
+
+        const title = "ɴɪᴄᴋ ᴍᴅ ᴍɪɴɪ";
+        const artist = "ɴɪᴄᴋ ᴍᴅ ᴍɪɴɪ";
+        const album = "ɴɪᴄᴋ ᴍᴅ ᴍɪɴɪ";
 
         let ffmpegCmd;
         if (hasThumb) {
@@ -405,21 +353,16 @@ async (conn, mek, m, { from, prefix, q, reply }) => {
 
         exec(ffmpegCmd, async (err) => {
             try {
-                if (err) {
-                    console.error("FFmpeg Error:", err);
-                    await conn.sendMessage(from, {
-                        audio: buffer,
-                        mimetype: "audio/mpeg",
-                        fileName: `${trackTitle} - ${trackArtist}.mp3`.replace(/[\\/:"*?<>|]/g, ""),
-                    }, { quoted: mek });
-                } else {
-                    const finalBuffer = await fs.readFile(outputPath);
-                    await conn.sendMessage(from, {
-                        audio: finalBuffer,
-                        mimetype: "audio/mpeg",
-                        fileName: `${trackTitle} - ${trackArtist}.mp3`.replace(/[\\/:"*?<>|]/g, ""),
-                    }, { quoted: mek });
+                let finalBuffer = buffer;
+                if (!err && fs.existsSync(outputPath)) {
+                    finalBuffer = await fs.readFile(outputPath);
                 }
+
+                await conn.sendMessage(from, {
+                    audio: finalBuffer,
+                    mimetype: "audio/mpeg",
+                    fileName: `${trackTitle} - ${trackArtist}.mp3`.replace(/[\\/:"*?<>|]/g, ""),
+                }, { quoted: mek });
 
                 await conn.sendMessage(from, { react: { text: "✅", key: mek.key } });
             } catch (e) {
@@ -434,7 +377,7 @@ async (conn, mek, m, { from, prefix, q, reply }) => {
 
     } catch (error) {
         console.error("Spotify Plugin Error:", error.message);
-        await reply(`❌ Error: ${error.message}. The site backend might be down or blocked.`);
+        await reply(`❌ Error: ${error.message}.`);
         await conn.sendMessage(from, { react: { text: "❌", key: mek.key } });
     }
 })
