@@ -67,18 +67,11 @@ for (const cmd of events.commands) {
 app.use(express.static(path.join(__dirname, 'public')));
 
 const activeSockets = {};
-const keepAliveTimers = {};
 const reconnectTimers = {};
-
 const fileCache = {};
-
 const saveDebounceTimers = {};
 
 function cleanupSession(sessionId) {
-    if (keepAliveTimers[sessionId]) {
-        clearInterval(keepAliveTimers[sessionId]);
-        delete keepAliveTimers[sessionId];
-    }
     if (reconnectTimers[sessionId]) {
         clearTimeout(reconnectTimers[sessionId]);
         delete reconnectTimers[sessionId];
@@ -133,7 +126,6 @@ async function saveSession(sessionId, sessionPath) {
         }
 
         if (!hasChanges) {
-            console.log('No changes, skipping DB write:', sessionId);
             return;
         }
 
@@ -185,7 +177,7 @@ async function Pair(number, res = null) {
             syncFullHistory: false,
             connectTimeoutMs: 60000,
             defaultQueryTimeoutMs: 30000,
-            keepAliveIntervalMs: 30000,
+            keepAliveIntervalMs: 25000,
             msgRetryCounterCache
         });
 
@@ -259,14 +251,18 @@ async function Pair(number, res = null) {
 
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
+
             if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
-                const isLoggedOut = statusCode === DisconnectReason.loggedOut;
-                console.log(`Disconnected: ${sessionId} | Code: ${statusCode}`);
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                console.log(`Disconnected: ${sessionId} | Code: ${statusCode} | Reconnecting: ${shouldReconnect}`);
+                
                 cleanupSession(sessionId);
-                if (!isLoggedOut) {
-                    console.log('Reconnecting:', sessionId);
-                    reconnectTimers[sessionId] = setTimeout(() => Pair(number), 5000);
+
+                if (shouldReconnect) {
+                    reconnectTimers[sessionId] = setTimeout(() => {
+                        Pair(number).catch(e => console.error('Reconnection failed:', e));
+                    }, 5000);
                 } else {
                     console.log('Logged out:', sessionId);
                     await Session.findOneAndDelete({ sessionId });
@@ -274,20 +270,6 @@ async function Pair(number, res = null) {
                 }
             } else if (connection === 'open') {
                 console.log('✅ 𝐂onnected:', sessionId);
-
-                keepAliveTimers[sessionId] = setInterval(async () => {
-                    if (!activeSockets[sessionId]) {
-                        clearInterval(keepAliveTimers[sessionId]);
-                        delete keepAliveTimers[sessionId];
-                        return;
-                    }
-
-                    sock.sendPresenceUpdate('available', sock.user.id).catch(() => {
-                        console.log('Keep-alive failed:', sessionId);
-                        cleanupSession(sessionId);
-                        reconnectTimers[sessionId] = setTimeout(() => Pair(number), 3000);
-                    });
-                }, 30000);
 
                 try {
                     const jid = xnumber + '@s.whatsapp.net';
@@ -314,8 +296,7 @@ async function Pair(number, res = null) {
         sock.ev.on('messages.upsert', async (mek) => {
             try {
                 mek = mek.messages[0];
-
-                if (!mek.message) return;
+                if (!mek || !mek.message) return;
 
                 mek.message = (getContentType(mek.message) === 'ephemeralMessage')
                     ? mek.message.ephemeralMessage.message
@@ -349,7 +330,7 @@ async function Pair(number, res = null) {
                     type === 'templateButtonReplyMessage' ? mek.message.templateButtonReplyMessage?.selectedId :
                     m.msg?.text || m.msg?.conversation || m.msg?.caption || '';
 
-                const prefix = config.PREFIX;
+                const prefix       = config.PREFIX;
                 const isCmd        = body.startsWith(prefix);
                 const command      = isCmd ? body.slice(prefix.length).trim().split(' ').shift().toLowerCase() : '';
                 const args         = body.trim().split(/ +/).slice(1);
@@ -384,10 +365,8 @@ async function Pair(number, res = null) {
 
                 if (isCmd) await sock.readMessages([mek.key]);
 
-
                 if (config.AUTO_REACT && !isMe && !isReact && Math.random() < 0.3) {
                     const emojis = config.REACT_EMOJIS;
-
                     sock.sendMessage(from, {
                         react: {
                             text: emojis[Math.floor(Math.random() * emojis.length)],
@@ -404,13 +383,11 @@ async function Pair(number, res = null) {
                 const cmdName = isCmd ? body.slice(prefix.length).trim().split(' ')[0].toLowerCase() : false;
 
                 if (isCmd) {
-
                     const cmd = commandMap.get(cmdName);
-
                     if (cmd) {
-                        if (cmd.react) sock.sendMessage(from, { react: { text: cmd.react, key: mek.key } });
+                        if (cmd.react) sock.sendMessage(from, { react: { text: cmd.react, key: mek.key } }).catch(() => {});
                         try {
-                            cmd.function(sock, mek, m, {
+                            await cmd.function(sock, mek, m, {
                                 from, prefix, isSudo, quoted, body, isCmd, isPre,
                                 command, args, q, isGroup, sender, senderNumber,
                                 botNumber2, botNumber, pushname, isMe, isOwner,
@@ -426,7 +403,7 @@ async function Pair(number, res = null) {
                 for (const cmd of events.commands) {
                     try {
                         if (body && cmd.on === 'body') {
-                            cmd.function(sock, mek, m, {
+                            await cmd.function(sock, mek, m, {
                                 from, prefix, quoted, body, isSudo, isCmd,
                                 command, args, q, isPre, isGroup, sender, senderNumber,
                                 botNumber2, botNumber, pushname, isMe, isOwner,
@@ -434,7 +411,7 @@ async function Pair(number, res = null) {
                                 groupAdmins, isBotAdmins, isAdmins, reply
                             });
                         } else if (mek.q && cmd.on === 'text') {
-                            cmd.function(sock, mek, m, {
+                            await cmd.function(sock, mek, m, {
                                 from, quoted, body, isSudo, isCmd, isPre,
                                 command, args, q, isGroup, sender, senderNumber,
                                 botNumber2, botNumber, pushname, isMe, isOwner,
@@ -442,7 +419,7 @@ async function Pair(number, res = null) {
                                 groupAdmins, isBotAdmins, isAdmins, reply
                             });
                         } else if ((cmd.on === 'image' || cmd.on === 'photo') && mek.type === 'imageMessage') {
-                            cmd.function(sock, mek, m, {
+                            await cmd.function(sock, mek, m, {
                                 from, prefix, quoted, isSudo, body, isCmd,
                                 command, isPre, args, q, isGroup, sender, senderNumber,
                                 botNumber2, botNumber, pushname, isMe, isOwner,
@@ -450,7 +427,7 @@ async function Pair(number, res = null) {
                                 groupAdmins, isBotAdmins, isAdmins, reply
                             });
                         } else if (cmd.on === 'sticker' && mek.type === 'stickerMessage') {
-                            cmd.function(sock, mek, m, {
+                            await cmd.function(sock, mek, m, {
                                 from, prefix, quoted, isSudo, body, isCmd,
                                 command, args, isPre, q, isGroup, sender, senderNumber,
                                 botNumber2, botNumber, pushname, isMe, isOwner,
@@ -467,7 +444,6 @@ async function Pair(number, res = null) {
                     case 'jid':
                         reply(from);
                         break;
-
                     case 'ev': {
                         if (isOwner) {
                             try {
@@ -500,28 +476,21 @@ async function restoreAllSessions() {
         const sessions = await Session.find();
         console.log(`Restoring ${sessions.length} session(s)...`);
 
-        await Promise.all(
-            sessions
-                .filter(s => {
-                    if (!s.sessionId) { console.warn('Skipping session without sessionId:', s); return false; }
-                    return true;
-                })
-                .map(async (s, index) => {
-                    const number = s.sessionId.replace('nick_', '');
-                    try {
-                  
-                        await new Promise(r => setTimeout(r, index * 500));
-                        await Pair(number);
-                    } catch (err) {
-                        console.error('Failed to restore session', s.sessionId, err);
-                    }
-                })
-        );
+        for (let i = 0; i < sessions.length; i++) {
+            const s = sessions[i];
+            if (!s.sessionId) continue;
+            const number = s.sessionId.replace('nick_', '');
+            try {
+                await new Promise(r => setTimeout(r, 1000));
+                await Pair(number);
+            } catch (err) {
+                console.error('Failed to restore session', s.sessionId, err);
+            }
+        }
     } catch (err) {
         console.error('restoreAllSessions error:', err);
     }
 }
-
 
 app.get('/pair', async (req, res) => {
     const number = req.query.number;
@@ -546,5 +515,9 @@ process.on('uncaughtException', (err) => {
     if (e.includes('rate-overlimit')) return;
     if (e.includes('Connection Closed')) return;
     if (e.includes('Value not found')) return;
-    console.log('Caught exception:', err);
+    console.error('Caught exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
