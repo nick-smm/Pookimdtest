@@ -7,6 +7,8 @@ const util = require("util");
 const crypto = require("crypto");
 const { pipeline } = require("stream/promises");
 const execPromise = util.promisify(exec);
+const ffmpegPath = require("ffmpeg-static");
+const yts = require("yt-search");
 
 const config = require("../config");
 const { cmd } = require("../command");
@@ -146,43 +148,55 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             title = quoted.filename || "Quoted Audio";
         } else {
             const ytId = getYouTubeId(songQuery);
-            let searchItem = null;
 
-            if (ytId) {
-                videoUrl = `https://www.youtube.com/watch?v=${ytId}`;
-                try {
-                    const { data: searchRes } = await axios.get(`https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(videoUrl)}`);
-                    if (searchRes.results?.length) {
-                        searchItem = searchRes.results[0];
-                    }
-                } catch (err) { }
-            } else {
-                const { data: searchRes } = await axios.get(`https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(songQuery)}`);
-                if (!searchRes.results?.length) throw new Error("No search results found for: " + songQuery);
-                searchItem = searchRes.results[0];
+            // YouTube Search with API fallback to yt-search package
+            try {
+                const { data: searchRes } = await axios.get(`https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(songQuery)}`, { timeout: 8000 });
+                if (searchRes.results?.length) {
+                    const searchItem = searchRes.results[0];
+                    videoUrl = searchItem.url;
+                    title = searchItem.title;
+                    duration = searchItem.duration;
+                    author = typeof searchItem.author === 'object' ? searchItem.author?.name : searchItem.author;
+                }
+            } catch (err) {
+                // Local search fallback if API fails
+                const searchRes = await yts(songQuery);
+                const searchItem = searchRes.videos?.[0];
+                if (!searchItem) throw new Error("No search results found for: " + songQuery);
                 videoUrl = searchItem.url;
+                title = searchItem.title;
+                duration = searchItem.timestamp;
+                author = searchItem.author?.name;
             }
 
-            title = searchItem?.title || "YouTube Audio";
-            duration = searchItem?.duration || "";
-            author = typeof searchItem?.author === 'object' ? searchItem?.author?.name : (searchItem?.author || "");
+            if (!videoUrl) throw new Error("Could not extract a valid YouTube video URL.");
 
             await conn.sendMessage(from, { react: { text: "📥", key: mek.key } });
 
-            const { data: downloadRes } = await axios.get(`https://xenoytdl-2.vercel.app/api/youtube?url=${encodeURIComponent(videoUrl)}&format=mp3`);
-
-            if (downloadRes?.title && downloadRes.title !== "YouTube Audio") {
-                title = downloadRes.title;
+            // Download audio from API
+            let downloadUrl;
+            try {
+                const { data: downloadRes } = await axios.get(`https://xenoytdl-2.vercel.app/api/youtube?url=${encodeURIComponent(videoUrl)}&format=mp3`, { timeout: 15000 });
+                downloadUrl = downloadRes?.download;
+                if (downloadRes?.title && downloadRes.title !== "YouTube Audio") {
+                    title = downloadRes.title;
+                }
+            } catch (err) {
+                // Secondary API fallback
+                const { data: downloadRes } = await axios.get(`https://api.dreaded.site/api/ytdl/video?url=${encodeURIComponent(videoUrl)}`, { timeout: 15000 });
+                downloadUrl = downloadRes?.result?.download?.url || downloadRes?.download;
             }
 
-            if (!downloadRes?.download) {
-                throw new Error("Failed to download song audio.");
+            if (!downloadUrl) {
+                throw new Error("Failed to retrieve downloadable audio URL from servers.");
             }
 
             const response = await axios({
                 method: 'get',
-                url: downloadRes.download,
-                responseType: 'stream'
+                url: downloadUrl,
+                responseType: 'stream',
+                timeout: 30000
             });
             await pipeline(response.data, fs.createWriteStream(inputPath));
         }
@@ -192,7 +206,8 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
         const safeTitle = (title || "Audio").replace(/["'$`\\]/g, "");
         const safeArtist = (author || config.botName || "NICK XD MD").replace(/["'$`\\]/g, "");
 
-        const cmdStr = `ffmpeg -y -i "${inputPath}" -vn -c:a libopus -b:a 48k -ac 1 -ar 48000 -metadata title="${safeTitle}" -metadata artist="${safeArtist}" "${outputPath}"`;
+        const ffBin = ffmpegPath || "ffmpeg";
+        const cmdStr = `"${ffBin}" -y -i "${inputPath}" -vn -c:a libopus -b:a 48k -ac 1 -ar 48000 -metadata title="${safeTitle}" -metadata artist="${safeArtist}" "${outputPath}"`;
 
         let voiceBuffer;
         let mimetype = "audio/ogg; codecs=opus";
@@ -206,7 +221,7 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
                 mimetype = "audio/mpeg";
             }
         } catch (err) {
-            console.error("FFmpeg error:", err.message);
+            console.error("FFmpeg execution error, falling back to raw mp3:", err.message);
             voiceBuffer = await fs.readFile(inputPath);
             mimetype = "audio/mpeg";
         }
@@ -221,7 +236,7 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             waveform: waveformData
         });
 
-        // 2. Reply to sent voice note IN THE CHANNEL with stylish music player card
+        // 2. Reply to sent voice note IN THE CHANNEL with music player card
         if (channelVoiceMsg) {
             const channelCaption =
                 `🎧 *${title}*\n` +
