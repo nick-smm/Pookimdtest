@@ -149,7 +149,6 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
         } else {
             const ytId = getYouTubeId(songQuery);
 
-            // YouTube Search with API fallback to yt-search package
             try {
                 const { data: searchRes } = await axios.get(`https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(songQuery)}`, { timeout: 8000 });
                 if (searchRes.results?.length) {
@@ -160,7 +159,6 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
                     author = typeof searchItem.author === 'object' ? searchItem.author?.name : searchItem.author;
                 }
             } catch (err) {
-                // Local search fallback if API fails
                 const searchRes = await yts(songQuery);
                 const searchItem = searchRes.videos?.[0];
                 if (!searchItem) throw new Error("No search results found for: " + songQuery);
@@ -174,7 +172,6 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
 
             await conn.sendMessage(from, { react: { text: "📥", key: mek.key } });
 
-            // Download audio from API
             let downloadUrl;
             try {
                 const { data: downloadRes } = await axios.get(`https://xenoytdl-2.vercel.app/api/youtube?url=${encodeURIComponent(videoUrl)}&format=mp3`, { timeout: 15000 });
@@ -183,7 +180,6 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
                     title = downloadRes.title;
                 }
             } catch (err) {
-                // Secondary API fallback
                 const { data: downloadRes } = await axios.get(`https://api.dreaded.site/api/ytdl/video?url=${encodeURIComponent(videoUrl)}`, { timeout: 15000 });
                 downloadUrl = downloadRes?.result?.download?.url || downloadRes?.download;
             }
@@ -203,40 +199,38 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
 
         await conn.sendMessage(from, { react: { text: "🎙️", key: mek.key } });
 
-        const safeTitle = (title || "Audio").replace(/["'$`\\]/g, "");
-        const safeArtist = (author || config.botName || "NICK XD MD").replace(/["'$`\\]/g, "");
-
         const ffBin = ffmpegPath || "ffmpeg";
-        const cmdStr = `"${ffBin}" -y -i "${inputPath}" -vn -c:a libopus -b:a 48k -ac 1 -ar 48000 -metadata title="${safeTitle}" -metadata artist="${safeArtist}" "${outputPath}"`;
+        // Convert strictly to Opus audio with correct container parameters for WhatsApp PTT
+        const cmdStr = `"${ffBin}" -y -i "${inputPath}" -vn -c:a libopus -b:a 48k -ar 48000 -ac 1 "${outputPath}"`;
 
         let voiceBuffer;
-        let mimetype = "audio/ogg; codecs=opus";
+        let isOpusConverted = false;
 
         try {
             await execPromise(cmdStr);
             if (await fs.pathExists(outputPath)) {
                 voiceBuffer = await fs.readFile(outputPath);
-            } else {
-                voiceBuffer = await fs.readFile(inputPath);
-                mimetype = "audio/mpeg";
+                isOpusConverted = true;
             }
         } catch (err) {
-            console.error("FFmpeg execution error, falling back to raw mp3:", err.message);
+            console.error("FFmpeg execution error:", err.message);
+        }
+
+        if (!isOpusConverted) {
             voiceBuffer = await fs.readFile(inputPath);
-            mimetype = "audio/mpeg";
         }
 
         const waveformData = createStylishWaveform(64);
 
-        // 1. Send voice note with dynamic audio wave bars to WhatsApp channel
+        // Send Voice Note to WhatsApp Channel (Newsletter)
         const channelVoiceMsg = await conn.sendMessage(channelJid, {
             audio: voiceBuffer,
-            mimetype: mimetype,
-            ptt: mimetype.includes("opus"),
+            mimetype: isOpusConverted ? "audio/ogg; codecs=opus" : "audio/mpeg",
+            ptt: true,
             waveform: waveformData
         });
 
-        // 2. Reply to sent voice note IN THE CHANNEL with music player card
+        // Send follow-up caption card in channel
         if (channelVoiceMsg) {
             const channelCaption =
                 `🎧 *${title}*\n` +
@@ -251,7 +245,6 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             }, { quoted: channelVoiceMsg });
         }
 
-        // 3. Send confirmation text in active chat
         await conn.sendMessage(from, { react: { text: "✅", key: mek.key } });
 
         const chatDetailsText =
@@ -272,7 +265,7 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
     } catch (e) {
         console.error("Csong Error:", e.message);
         await conn.sendMessage(from, { react: { text: "❌", key: mek.key } });
-        await reply("Error: " + e.message);
+        await reply("Error sending audio to channel: " + e.message);
     } finally {
         if (await fs.pathExists(inputPath)) await fs.remove(inputPath).catch(() => { });
         if (await fs.pathExists(outputPath)) await fs.remove(outputPath).catch(() => { });
