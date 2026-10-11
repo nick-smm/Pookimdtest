@@ -1,68 +1,85 @@
-const config = require('../config')
-const { cmd, commands } = require('../command')
+const config = require('../config');
+const { cmd, commands } = require('../command');
+
+function runtime(seconds) {
+    seconds = Number(seconds);
+    const d = Math.floor(seconds / (3600 * 24));
+    const h = Math.floor((seconds % (3600 * 24)) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const dDisplay = d > 0 ? `${d}d ` : '';
+    const hDisplay = h > 0 ? `${h}h ` : '';
+    const mDisplay = m > 0 ? `${m}m ` : '';
+    const sDisplay = s > 0 ? `${s}s` : '';
+    return (dDisplay + hDisplay + mDisplay + sDisplay).trim() || '0s';
+}
 
 cmd({
     pattern: "menu",
+    alias: ["help", "list", "commands"],
     desc: "Show all commands",
     category: "main",
-    react: "📋",
     filename: __filename
 },
 async (conn, mek, m, { from, pushname, reply }) => {
     try {
-        let prefix = config.PREFIX || "."
-        let botName = config.BOT_NAME || "NICK MD"
-        let userName = pushname || "User"
+        const prefix = config.PREFIX || ".";
+        const botName = config.botName || config.BOT_NAME || "NICK MD MINI";
+        const userName = pushname || "User";
 
-        let menu = `╭━━━〔 🪀 ${botName.toUpperCase()} MENU 〕━━━⬣\n`
-        menu += `┃ 👋 Hello ${userName}\n`
-        menu += `┃ ⚡ Prefix : ${prefix}\n`
-        menu += `┃ 📦 Commands : ${commands.length}\n`
-        menu += `╰━━━━━━━━━━━━━━⬣\n\n`
+        let menu = `╭━━━〔 ֍ *${botName.toUpperCase()}* ֍ 〕━━━⬣\n`;
+        menu += `┃ ֍ *ᴜsᴇʀ* : ${userName}\n`;
+        menu += `┃ ֍ *ᴘʀᴇғɪx* : [ ${prefix} ]\n`;
+        menu += `┃ ֍ *ᴜᴘᴛɪᴍᴇ* : ${runtime(process.uptime())}\n`;
+        menu += `┃ ֍ *ᴄᴏᴍᴍᴀɴᴅs* : ${commands.length}\n`;
+        menu += `┃ ֍ *ᴍᴏᴅᴇ* : Public\n`;
+        menu += `╰━━━━━━━━━━━━━━━━━━━━━━⬣\n\n`;
 
-        let categories = {}
+        let categories = {};
 
         commands.forEach(command => {
-            // Category ഇല്ലെങ്കിൽ 'MAIN' എന്ന് ഓട്ടോമാറ്റിക് എടുക്കും
-            let cat = command.category ? command.category.toString().toUpperCase() : "MAIN"
+            if (command.dontAddCommandList) return;
+            const cat = command.category ? command.category.toString().toUpperCase() : "MAIN";
 
-            if (!categories[cat]) categories[cat] = []
-            if (command.pattern) {
-                categories[cat].push(command.pattern)
+            if (!categories[cat]) categories[cat] = [];
+            if (command.pattern && !categories[cat].includes(command.pattern)) {
+                categories[cat].push(command.pattern);
             }
-        })
+        });
 
-        for (let cat in categories) {
-            menu += `╭───〔 ${cat} 〕───⬣\n`
-
-            categories[cat].forEach(command => {
-                menu += `┃ ➤ ${prefix}${command}\n`
-            })
-
-            menu += `╰────────────⬣\n\n`
+        for (const cat in categories) {
+            menu += `╭───〔 ֍ *${cat}* ֍ 〕───⬣\n`;
+            categories[cat].forEach(cmdName => {
+                menu += `┃ ֍ ${prefix}${cmdName}\n`;
+            });
+            menu += `╰─────────────────────⬣\n\n`;
         }
 
-        // വീഡിയോ ലിങ്ക് ഉണ്ടെങ്കിൽ വീഡിയോ അയക്കും, ഇല്ലെങ്കിൽ വെറും ടെക്സ്റ്റ് അയക്കും
+        if (config.footer) {
+            menu += `${config.footer}\n`;
+        }
+
+        // Send with video if MENU_VIDEO is set, otherwise send text
         if (config.MENU_VIDEO) {
             await conn.sendMessage(
                 from,
                 {
                     video: { url: config.MENU_VIDEO.toString() },
-                    caption: menu,
+                    caption: menu.trim(),
                     gifPlayback: false
                 },
                 { quoted: mek }
-            )
+            );
         } else {
             await conn.sendMessage(
                 from,
-                { text: menu },
+                { text: menu.trim() },
                 { quoted: mek }
-            )
+            );
         }
 
     } catch (e) {
-        console.log(e)
-        reply(`❌ Error: ${e.message || e}`)
+        console.error("Menu Error:", e);
+        reply(`Error: ${e.message || e}`);
     }
-})
+});
