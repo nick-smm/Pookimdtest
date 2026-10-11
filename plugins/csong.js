@@ -5,6 +5,7 @@ const fs = require("fs-extra");
 const path = require("path");
 const util = require("util");
 const crypto = require("crypto");
+const { pipeline } = require("stream/promises");
 const execPromise = util.promisify(exec);
 
 const config = require("../config");
@@ -104,6 +105,29 @@ async function resolveChannelJid(conn, input) {
 
 
 async function searchYouTube(query) {
+    // Primary: xenosirapis.zone.id
+    try {
+        const { data } = await axios.get(`https://xenosirapis.zone.id/api/ytsearch?query=${encodeURIComponent(query)}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+            timeout: 20000
+        });
+        if (data && data.results && data.results.length > 0) {
+            const item = data.results[0];
+            const videoId = item.videoId || item.id;
+            const url = item.url || (videoId ? `https://www.youtube.com/watch?v=${videoId}` : null);
+            if (url) {
+                return {
+                    url,
+                    videoId,
+                    title: item.title || query,
+                    duration: item.duration || item.timestamp || "",
+                    author: typeof item.author === 'object' ? item.author?.name : (item.author || item.channel || "")
+                };
+            }
+        }
+    } catch (e) {}
+
+    // Fallback: xenoytserch.vercel.app
     try {
         const { data } = await axios.get(`https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(query)}`, {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
@@ -123,46 +147,7 @@ async function searchYouTube(query) {
                 };
             }
         }
-    } catch (e) {
-        
-    }
-
-    
-    try {
-        const { data: html } = await axios.get(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept-Language': 'en-US,en;q=0.9'
-            },
-            timeout: 12000
-        });
-
-        const videoIdMatch = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
-        if (videoIdMatch && videoIdMatch[1]) {
-            const videoId = videoIdMatch[1];
-            let title = query;
-            const titleMatch = html.match(/"title":\{"runs":\[\{"text":"(.*?)"\}\]/);
-            if (titleMatch && titleMatch[1]) title = titleMatch[1];
-
-            let duration = "";
-            const durationMatch = html.match(/"lengthText":\{"simpleText":"(.*?)"\}/);
-            if (durationMatch && durationMatch[1]) duration = durationMatch[1];
-
-            let author = "";
-            const authorMatch = html.match(/"ownerText":\{"runs":\[\{"text":"(.*?)"/);
-            if (authorMatch && authorMatch[1]) author = authorMatch[1];
-
-            return {
-                url: `https://www.youtube.com/watch?v=${videoId}`,
-                videoId,
-                title,
-                duration,
-                author
-            };
-        }
-    } catch (e) {
-        
-    }
+    } catch (e) {}
 
     return null;
 }
@@ -381,17 +366,31 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             const dlData = await fetchAudioDownloadUrl(videoUrl);
             if (dlData.title) title = dlData.title;
 
-            // Download audio as arraybuffer with browser headers to avoid CDN 403 blocks
-            const response = await axios.get(dlData.downloadUrl, {
-                responseType: 'arraybuffer',
-                timeout: 60000,
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': '*/*'
-                }
-            });
-
-            await fs.writeFile(inputPath, Buffer.from(response.data));
+            // Download audio — try stream pipeline first (like archive), fallback to arraybuffer
+            try {
+                const streamRes = await axios({
+                    method: 'get',
+                    url: dlData.downloadUrl,
+                    responseType: 'stream',
+                    timeout: 60000,
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': '*/*'
+                    }
+                });
+                await pipeline(streamRes.data, fs.createWriteStream(inputPath));
+            } catch (streamErr) {
+                console.warn("[csong] Stream download failed, trying arraybuffer:", streamErr.message);
+                const response = await axios.get(dlData.downloadUrl, {
+                    responseType: 'arraybuffer',
+                    timeout: 60000,
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': '*/*'
+                    }
+                });
+                await fs.writeFile(inputPath, Buffer.from(response.data));
+            }
         }
 
         // Convert audio to voice recording (PTT Opus Ogg)
