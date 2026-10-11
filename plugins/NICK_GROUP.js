@@ -1,33 +1,32 @@
 const config = require('../config');
 const { cmd } = require('../command');
 const path = require('path');
-const fs = require('fs-extra');
+const fs = require('fs');
 
 const dbDir = path.join(__dirname, '../db');
 const welcomeDbPath = path.join(dbDir, 'welcome.json');
 
-/**
- * Safely loads welcome/goodbye database
- */
-async function getWelcomeDb() {
-    await fs.ensureDir(dbDir);
-    if (!(await fs.pathExists(welcomeDbPath))) {
-        await fs.writeJson(welcomeDbPath, {});
+
+function getWelcomeDb() {
+    try {
+        if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+        if (!fs.existsSync(welcomeDbPath)) fs.writeFileSync(welcomeDbPath, '{}');
+        return JSON.parse(fs.readFileSync(welcomeDbPath, 'utf-8'));
+    } catch {
+        return {};
     }
-    return await fs.readJson(welcomeDbPath).catch(() => ({}));
 }
 
-/**
- * Saves welcome/goodbye database
- */
-async function saveWelcomeDb(data) {
-    await fs.ensureDir(dbDir);
-    await fs.writeJson(welcomeDbPath, data, { spaces: 2 });
+
+function saveWelcomeDb(data) {
+    try {
+        if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+        fs.writeFileSync(welcomeDbPath, JSON.stringify(data, null, 2));
+    } catch (e) {
+        console.error("Save welcome DB error:", e);
+    }
 }
 
-/**
- * Helper to extract target user JID from reply/quote, mentions, or raw argument
- */
 function getTargetUser(m, q) {
     if (m.quoted && m.quoted.sender) {
         return m.quoted.sender;
@@ -47,7 +46,7 @@ function getTargetUser(m, q) {
     return null;
 }
 
-// ------------------- PROMOTE -------------------
+
 cmd({
     pattern: "promote",
     alias: ["admin"],
@@ -59,15 +58,15 @@ cmd({
 async (conn, mek, m, { from, q, isGroup, isBotAdmins, isAdmins, isOwner, reply }) => {
     try {
         if (!isGroup) return await reply("This command can only be used in groups.");
-        if (!isBotAdmins) return await reply("I need to be an Admin to promote members.");
-        if (!isAdmins && !isOwner) return await reply("Only group Admins can use this command.");
+        if (!isBotAdmins) return await reply(" I need to be an Admin to promote members.");
+        if (!isAdmins && !isOwner) return await reply(" Only group Admins can use this command.");
 
         const user = getTargetUser(m, q);
-        if (!user) return await reply("Please tag, reply to, or provide the number of the user to promote.");
+        if (!user) return await reply(" Please tag, reply to, or provide the number of the user to promote.");
 
         await conn.groupParticipantsUpdate(from, [user], 'promote');
         await conn.sendMessage(from, {
-            text: `@${user.split('@')[0]} has been promoted to admin! 👑`,
+            text: `@${user.split('@')[0]} has been promoted to admin! `,
             mentions: [user]
         }, { quoted: mek });
     } catch (e) {
@@ -76,7 +75,7 @@ async (conn, mek, m, { from, q, isGroup, isBotAdmins, isAdmins, isOwner, reply }
     }
 });
 
-// ------------------- DEMOTE -------------------
+
 cmd({
     pattern: "demote",
     alias: ["unadmin"],
@@ -92,7 +91,7 @@ async (conn, mek, m, { from, q, isGroup, isBotAdmins, isAdmins, isOwner, reply }
         if (!isAdmins && !isOwner) return await reply("Only group Admins can use this command.");
 
         const user = getTargetUser(m, q);
-        if (!user) return await reply("Please tag, reply to, or provide the number of the user to demote.");
+        if (!user) return await reply(" Please tag, reply to, or provide the number of the user to demote.");
 
         await conn.groupParticipantsUpdate(from, [user], 'demote');
         await conn.sendMessage(from, {
@@ -118,10 +117,10 @@ async (conn, mek, m, { from, q, isGroup, isBotAdmins, isAdmins, isOwner, reply }
     try {
         if (!isGroup) return await reply("This command can only be used in groups.");
         if (!isBotAdmins) return await reply("I need to be an Admin to remove members.");
-        if (!isAdmins && !isOwner) return await reply("Only group Admins can use this command.");
+        if (!isAdmins && !isOwner) return await reply(" Only group Admins can use this command.");
 
         const user = getTargetUser(m, q);
-        if (!user) return await reply("Please tag, reply to, or provide the number of the user to remove.");
+        if (!user) return await reply(" Please tag, reply to, or provide the number of the user to remove.");
 
         await conn.groupParticipantsUpdate(from, [user], 'remove');
         await conn.sendMessage(from, {
@@ -145,8 +144,8 @@ cmd({
 async (conn, mek, m, { from, q, isGroup, isBotAdmins, isAdmins, isOwner, reply }) => {
     try {
         if (!isGroup) return await reply("This command can only be used in groups.");
-        if (!isBotAdmins) return await reply("I need to be an Admin to add members.");
-        if (!isAdmins && !isOwner) return await reply("Only group Admins can use this command.");
+        if (!isBotAdmins) return await reply(" I need to be an Admin to add members.");
+        if (!isAdmins && !isOwner) return await reply(" Only group Admins can use this command.");
 
         const user = getTargetUser(m, q);
         if (!user) return await reply("Please provide a valid phone number to add (e.g. .add 919876543210).");
@@ -157,7 +156,7 @@ async (conn, mek, m, { from, q, isGroup, isBotAdmins, isAdmins, isOwner, reply }
         if (status === "403" || status === "408") {
             return await reply("Cannot add user directly due to their privacy settings. Please send an invite link instead.");
         } else if (status === "409") {
-            return await reply("User is already in this group.");
+            return await reply(" User is already in this group.");
         }
 
         await conn.sendMessage(from, {
@@ -182,11 +181,11 @@ cmd({
 async (conn, mek, m, { from, isGroup, isBotAdmins, isAdmins, isOwner, reply }) => {
     try {
         if (!isGroup) return await reply("This command can only be used in groups.");
-        if (!isBotAdmins) return await reply("I need to be an Admin to change group settings.");
-        if (!isAdmins && !isOwner) return await reply("Only group Admins can use this command.");
+        if (!isBotAdmins) return await reply(" I need to be an Admin to change group settings.");
+        if (!isAdmins && !isOwner) return await reply(" Only group Admins can use this command.");
 
         await conn.groupSettingUpdate(from, 'announcement');
-        await reply("Group has been muted (Only admins can send messages).");
+        await reply("🔒 Group has been muted (Only admins can send messages).");
     } catch (e) {
         console.error("Mute Error:", e);
         reply(`Error: ${e.message || e}`);
@@ -204,11 +203,11 @@ cmd({
 async (conn, mek, m, { from, isGroup, isBotAdmins, isAdmins, isOwner, reply }) => {
     try {
         if (!isGroup) return await reply("This command can only be used in groups.");
-        if (!isBotAdmins) return await reply("I need to be an Admin to change group settings.");
-        if (!isAdmins && !isOwner) return await reply("Only group Admins can use this command.");
+        if (!isBotAdmins) return await reply(" I need to be an Admin to change group settings.");
+        if (!isAdmins && !isOwner) return await reply(" Only group Admins can use this command.");
 
         await conn.groupSettingUpdate(from, 'not_announcement');
-        await reply("🔓 Group has been unmuted (All members can send messages).");
+        await reply(" Group has been unmuted (All members can send messages).");
     } catch (e) {
         console.error("Unmute Error:", e);
         reply(`Error: ${e.message || e}`);
@@ -227,12 +226,12 @@ cmd({
 async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, participants, groupName, reply }) => {
     try {
         if (!isGroup) return await reply("This command can only be used in groups.");
-        if (!isAdmins && !isOwner) return await reply("Only group Admins can use this command.");
-        if (!participants || participants.length === 0) return await reply("Could not fetch participants.");
+        if (!isAdmins && !isOwner) return await reply(" Only group Admins can use this command.");
+        if (!participants || participants.length === 0) return await reply(" Could not fetch participants.");
 
-        let msg = `*Attention Everyone!*\n`;
-        if (groupName) msg += `*Group:* ${groupName}\n`;
-        if (q) msg += `*Message:* ${q}\n`;
+        let msg = `Attention Everyone!\n`;
+        if (groupName) msg += ` Group: ${groupName}\n`;
+        if (q) msg += `Message: ${q}\n`;
         msg += `\n`;
 
         const mentions = [];
@@ -260,11 +259,11 @@ cmd({
 async (conn, mek, m, { from, isGroup, isBotAdmins, isAdmins, isOwner, reply }) => {
     try {
         if (!isGroup) return await reply("This command can only be used in groups.");
-        if (!isBotAdmins) return await reply("I need to be an Admin to fetch the invite link.");
-        if (!isAdmins && !isOwner) return await reply("Only group Admins can use this command.");
+        if (!isBotAdmins) return await reply(" I need to be an Admin to fetch the invite link.");
+        if (!isAdmins && !isOwner) return await reply(" Only group Admins can use this command.");
 
         const code = await conn.groupInviteCode(from);
-        if (!code) return await reply("Failed to get group invite link.");
+        if (!code) return await reply(" Failed to get group invite link.");
 
         await reply(`https://chat.whatsapp.com/${code}`);
     } catch (e) {
@@ -285,11 +284,11 @@ cmd({
 async (conn, mek, m, { from, isGroup, isBotAdmins, isAdmins, isOwner, reply }) => {
     try {
         if (!isGroup) return await reply("This command can only be used in groups.");
-        if (!isBotAdmins) return await reply("I need to be an Admin to reset the invite link.");
-        if (!isAdmins && !isOwner) return await reply("Only group Admins can use this command.");
+        if (!isBotAdmins) return await reply(" I need to be an Admin to reset the invite link.");
+        if (!isAdmins && !isOwner) return await reply(" Only group Admins can use this command.");
 
         await conn.groupRevokeInvite(from);
-        await reply("✅ Group invite link has been reset successfully.");
+        await reply(" Group invite link has been reset successfully.");
     } catch (e) {
         console.error("Revoke Error:", e);
         reply(`Error: ${e.message || e}`);
@@ -341,7 +340,7 @@ cmd({
 async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
     try {
         if (!isGroup) return await reply("This command can only be used in groups.");
-        if (!isAdmins && !isOwner) return await reply("Only group Admins can use this command.");
+        if (!isAdmins && !isOwner) return await reply(" Only group Admins can use this command.");
 
         if (!q) return await reply("Please provide a welcome message (or use 'off' to disable).");
 
@@ -349,13 +348,13 @@ async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
         if (q.toLowerCase() === "off") {
             if (db[from]) delete db[from].welcome;
             await saveWelcomeDb(db);
-            return await reply("✅ Welcome message disabled for this group.");
+            return await reply(" Welcome message disabled for this group.");
         }
 
         if (!db[from]) db[from] = {};
         db[from].welcome = q;
         await saveWelcomeDb(db);
-        await reply(`✅ Welcome message saved:\n\n${q}`);
+        await reply(` Welcome message saved:\n\n${q}`);
     } catch (e) {
         console.error("Setwelcome Error:", e);
         reply(`Error: ${e.message || e}`);
@@ -372,7 +371,7 @@ cmd({
 async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
     try {
         if (!isGroup) return await reply("This command can only be used in groups.");
-        if (!isAdmins && !isOwner) return await reply("Only group Admins can use this command.");
+        if (!isAdmins && !isOwner) return await reply(" Only group Admins can use this command.");
 
         if (!q) return await reply("Please provide a goodbye message (or use 'off' to disable).");
 
@@ -380,13 +379,13 @@ async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
         if (q.toLowerCase() === "off") {
             if (db[from]) delete db[from].goodbye;
             await saveWelcomeDb(db);
-            return await reply("✅ Goodbye message disabled for this group.");
+            return await reply(" Goodbye message disabled for this group.");
         }
 
         if (!db[from]) db[from] = {};
         db[from].goodbye = q;
         await saveWelcomeDb(db);
-        await reply(`✅ Goodbye message saved:\n\n${q}`);
+        await reply(` Goodbye message saved:\n\n${q}`);
     } catch (e) {
         console.error("Setgoodbye Error:", e);
         reply(`Error: ${e.message || e}`);
