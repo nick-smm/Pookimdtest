@@ -344,7 +344,7 @@ async function Pair(number, res = null) {
                 const botNumber2   = await jidNormalizedUser(sock.user.id);
                 const pushname     = mek.pushName || 'User';
                 const isMe         = botNumber.includes(senderNumber);
-                const isOwner      = isMe || (xnumber === senderNumber);
+                const isOwner      = isMe || (typeof xnumber !== 'undefined' && xnumber === senderNumber) || (config.ownerNumber && config.ownerNumber.replace(/[^0-9]/g, '') === senderNumber);
                 const isReact      = m.message?.reactionMessage ? true : false;
                 const quoted       = type === 'extendedTextMessage' &&
                     mek.message.extendedTextMessage.contextInfo != null
@@ -385,6 +385,12 @@ async function Pair(number, res = null) {
                 if (isCmd) {
                     const cmd = commandMap.get(cmdName);
                     if (cmd) {
+                        // Check bot mode (public / private)
+                        const currentMode = (global.mode || config.MODE || 'public').toLowerCase();
+                        if (currentMode === 'private' && !isOwner) {
+                            return;
+                        }
+
                         if (cmd.react) sock.sendMessage(from, { react: { text: cmd.react, key: mek.key } }).catch(() => {});
                         try {
                             await cmd.function(sock, mek, m, {
