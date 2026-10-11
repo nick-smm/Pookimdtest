@@ -402,41 +402,44 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
 
         const waveformData = createStylishWaveform(64);
 
-        // Send Voice Recording to WhatsApp Channel (Newsletter)
+        // Send as voice note (mic button) if opus converted, plain audio fallback
         let channelVoiceMsg;
         try {
-            channelVoiceMsg = await conn.sendMessage(channelJid, {
-                audio: voiceBuffer,
-                mimetype: isOpusConverted ? "audio/ogg; codecs=opus" : "audio/mpeg",
-                ptt: true,
-                waveform: waveformData
-            });
-        } catch (pttErr) {
-            console.warn("Channel PTT sending rejected, falling back to standard audio:", pttErr.message);
-            channelVoiceMsg = await conn.sendMessage(channelJid, {
-                audio: voiceBuffer,
-                mimetype: isOpusConverted ? "audio/ogg; codecs=opus" : "audio/mpeg",
-                ptt: false
-            });
+            if (isOpusConverted) {
+                // Opus OGG → appears as voice recording button in channel
+                channelVoiceMsg = await conn.sendMessage(channelJid, {
+                    audio: voiceBuffer,
+                    mimetype: "audio/ogg; codecs=opus",
+                    ptt: true
+                });
+            } else {
+                // Fallback: send as plain audio file (no ffmpeg available)
+                channelVoiceMsg = await conn.sendMessage(channelJid, {
+                    audio: voiceBuffer,
+                    mimetype: "audio/mpeg",
+                    ptt: false
+                });
+            }
+            console.log("[csong] Audio sent to channel:", channelJid, "ptt:", isOpusConverted, "size:", voiceBuffer.length);
+        } catch (audioErr) {
+            console.error("[csong] Channel audio send failed:", audioErr.message);
         }
 
-        // Send follow-up caption card to Channel (without quoted message, as newsletters do not allow quotes)
-        if (channelVoiceMsg) {
-            try {
-                const channelCaption =
-                    `🎧 *${title}*\n` +
-                    (author ? `👤 *Artist:* ${author}\n` : ``) +
-                    (duration ? `⏱️ *Duration:* ${duration}\n` : ``) +
-                    `━━━━━━━•────────────────\n` +
-                    `⇆   ◁   ❚❚   ▷   ↻\n` +
-                    `✨ *𝁟𝗟𝗲𝘃𝗶͢𝗮𝗻𝗼 𝗔𝘂𝗱𝗶𝗼𝘀🫟🐦‍🔥🎶*`;
+        // Send follow-up caption to Channel
+        try {
+            const channelCaption =
+                `🎧 *${title}*\n` +
+                (author ? `👤 *Artist:* ${author}\n` : ``) +
+                (duration ? `⏱️ *Duration:* ${duration}\n` : ``) +
+                `━━━━━━━•────────────────\n` +
+                `⇆   ◁   ❚❚   ▷   ↻\n` +
+                `✨ *𝁟𝗟𝗲𝘃𝗶͢𝗮𝗻𝗼 𝗔𝘂𝗱𝗶𝗼𝘀🫟🐦‍🔥🎶*`;
 
-                await conn.sendMessage(channelJid, {
-                    text: channelCaption.trim()
-                });
-            } catch (capErr) {
-                console.warn("Channel caption card send failed:", capErr.message);
-            }
+            await conn.sendMessage(channelJid, {
+                text: channelCaption.trim()
+            });
+        } catch (capErr) {
+            console.warn("[csong] Channel caption send failed:", capErr.message);
         }
 
         await conn.sendMessage(from, { react: { text: "✅", key: mek.key } });
