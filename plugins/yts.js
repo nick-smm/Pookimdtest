@@ -19,23 +19,46 @@ async (conn, mek, m, { from, q, prefix }) => {
     try {
         await conn.sendMessage(from, { react: { text: "🔍", key: mek.key } });
 
-        const searchUrl = `https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(q)}`;
-        const { data: searchRes } = await axios.get(searchUrl);
+        let results = null;
 
-        if (!searchRes || !searchRes.status || !searchRes.results || searchRes.results.length === 0) {
+        // Provider 1: xenosirapis ytsearch
+        try {
+            const { data } = await axios.get(`https://xenosirapis.zone.id/api/ytsearch?query=${encodeURIComponent(q)}`, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+                timeout: 15000
+            });
+            if (data?.results?.length > 0) {
+                results = data.results;
+            }
+        } catch (err) {}
+
+        // Provider 2: xenoytserch fallback
+        if (!results) {
+            try {
+                const { data } = await axios.get(`https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(q)}`, {
+                    headers: { 'User-Agent': 'Mozilla/5.0' },
+                    timeout: 10000
+                });
+                if (data?.results?.length > 0) {
+                    results = data.results;
+                }
+            } catch (err) {}
+        }
+
+        if (!results || results.length === 0) {
             await conn.sendMessage(from, { react: { text: "❌", key: mek.key } });
             return await conn.sendMessage(from, { text: "No results found for your search." }, { quoted: mek });
         }
 
-        const videos = searchRes.results.slice(0, 10);
+        const videos = results.slice(0, 10);
         let msg = `*YOUTUBE SEARCH RESULTS*\n\n`;
 
         videos.forEach((video, index) => {
             msg += `*${index + 1}. ${video.title}*\n`;
-            msg += `📺 Channel: ${video.channel || 'Unknown'}\n`;
-            msg += `⏱ Duration: ${video.duration || 'Unknown'}\n`;
-            msg += `👁 Views: ${video.views || 'Unknown'}\n`;
-            msg += `🔗 Link: ${video.url}\n\n`;
+            msg += ` Channel: ${video.channel || 'Unknown'}\n`;
+            msg += ` Duration: ${video.duration || 'Unknown'}\n`;
+            msg += ` Views: ${video.views || 'Unknown'}\n`;
+            msg += ` Link: ${video.url}\n\n`;
         });
 
         msg += `_ʟ ᴇ ᴠ ɪ ᴀ ɴ ᴏ   x ᴅ🤍_`;
