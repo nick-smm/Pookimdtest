@@ -29,7 +29,7 @@ async (conn, mek, m, { from, pushname }) => {
 ツ *ᴜᴘᴛɪᴍᴇ* : ${runtime(process.uptime())}
 ツ *ᴏᴡɴᴇʀ* : @${botJid.split('@')[0]}
 ツ *sᴛᴀᴛᴜs* : Online ✅
-ツ *ᴍᴏᴅᴇ* : Public
+ツ *ᴍᴏᴅᴇ* : ${(global.mode || config.MODE || 'Public').toUpperCase() === 'PRIVATE' ? 'Private' : 'Public'}
 
 ╰━━━━━━━━━━━━━━━━⬣`;
 
