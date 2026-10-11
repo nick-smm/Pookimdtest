@@ -217,10 +217,14 @@ async function fetchAudioDownloadUrl(videoUrl) {
 }
 
 
-async function convertToVoiceNote(inputPath, outputPath) {
+async function convertToVoiceNote(inputPath, outputPath, title, artist) {
     const ffBin = getFfmpegBinary();
+    const safeTitle = (title || "Audio").replace(/["'$`\\]/g, "");
+    const safeArtist = (artist || config.botName || "ＸＥＮＯ ＸＤ").replace(/["'$`\\]/g, "");
+
+    // Primary: libopus with metadata tags (same as archive)
     try {
-        const cmd1 = `"${ffBin}" -y -i "${inputPath}" -vn -c:a libopus -b:a 64k -ar 48000 -ac 1 -f ogg "${outputPath}"`;
+        const cmd1 = `"${ffBin}" -y -i "${inputPath}" -vn -c:a libopus -b:a 48k -ac 1 -ar 48000 -metadata title="${safeTitle}" -metadata artist="${safeArtist}" "${outputPath}"`;
         await execPromise(cmd1);
         if (await fs.pathExists(outputPath) && (await fs.stat(outputPath)).size > 0) {
             return { success: true, buffer: await fs.readFile(outputPath) };
@@ -229,9 +233,9 @@ async function convertToVoiceNote(inputPath, outputPath) {
         console.warn("FFmpeg libopus conversion failed, attempting opus fallback:", err1.message);
     }
 
-    
+    // Fallback: opus codec without metadata
     try {
-        const cmd2 = `"${ffBin}" -y -i "${inputPath}" -vn -c:a opus -b:a 64k -ar 48000 -ac 1 -f ogg "${outputPath}"`;
+        const cmd2 = `"${ffBin}" -y -i "${inputPath}" -vn -c:a opus -b:a 48k -ac 1 -ar 48000 -metadata title="${safeTitle}" -metadata artist="${safeArtist}" "${outputPath}"`;
         await execPromise(cmd2);
         if (await fs.pathExists(outputPath) && (await fs.stat(outputPath)).size > 0) {
             return { success: true, buffer: await fs.readFile(outputPath) };
@@ -240,7 +244,6 @@ async function convertToVoiceNote(inputPath, outputPath) {
         console.warn("FFmpeg opus conversion fallback failed:", err2.message);
     }
 
-    
     return { success: false, buffer: await fs.readFile(inputPath) };
 }
 
@@ -393,10 +396,10 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             }
         }
 
-        // Convert audio to voice recording (PTT Opus Ogg)
+        // Convert audio to voice recording (PTT Opus Ogg) with metadata
         await conn.sendMessage(from, { react: { text: "🎙️", key: mek.key } });
 
-        const convResult = await convertToVoiceNote(inputPath, outputPath);
+        const convResult = await convertToVoiceNote(inputPath, outputPath, title, author);
         const voiceBuffer = convResult.buffer;
         const isOpusConverted = convResult.success;
 
@@ -425,7 +428,7 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             console.error("[csong] Channel audio send failed:", audioErr.message);
         }
 
-        // Send follow-up caption to Channel
+        // Send follow-up caption as a REPLY to the voice note in the channel (archive behavior)
         try {
             const channelCaption =
                 `🎧 *${title}*\n` +
@@ -435,9 +438,16 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
                 `⇆   ◁   ❚❚   ▷   ↻\n` +
                 `✨ *𝁟𝗟𝗲𝘃𝗶͢𝗮𝗻𝗼 𝗔𝘂𝗱𝗶𝗼𝘀🫟🐦‍🔥🎶*`;
 
-            await conn.sendMessage(channelJid, {
-                text: channelCaption.trim()
-            });
+            if (channelVoiceMsg) {
+                // Reply to the voice note — caption appears attached to audio (archive style)
+                await conn.sendMessage(channelJid, {
+                    text: channelCaption.trim()
+                }, { quoted: channelVoiceMsg });
+            } else {
+                await conn.sendMessage(channelJid, {
+                    text: channelCaption.trim()
+                });
+            }
         } catch (capErr) {
             console.warn("[csong] Channel caption send failed:", capErr.message);
         }
