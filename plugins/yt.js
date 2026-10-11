@@ -11,35 +11,90 @@ cmd({
 },
 async (conn, mek, m, { from, q, prefix, command }) => {
     try {
-        // Function to handle reactions easily
         const react = async (emoji) => {
             await conn.sendMessage(from, { react: { text: emoji, key: mek.key } });
         };
 
         if (!q) {
-            return await conn.sendMessage(from, { text: `_Please provide a YouTube URL_\nExample: ${prefix}ytv https://youtu.be/xxxxx` }, { quoted: mek });
+            return await conn.sendMessage(from, { 
+                text: `_Please provide a YouTube URL or song name_\nExample: ${prefix}yt https://youtu.be/xxxxx\nExample: ${prefix}ytv https://youtube.com/shorts/s2SzxUS9rFM` 
+            }, { quoted: mek });
         }
         
-        const videoUrl = q.trim();
+        let videoUrl = q.trim();
         const ytRegex = /^(https?:\/\/)?(www\.)?(youtube\.com\/[^\s]+|youtu\.be\/[^\s]+)$/i;
         
+        // If not a direct YouTube URL, search via xenoytserch
         if (!ytRegex.test(videoUrl)) {
-            return await conn.sendMessage(from, { text: "Invalid YouTube link format." }, { quoted: mek });
+            try {
+                const searchRes = await axios.get(`https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(videoUrl)}`, {
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+                    timeout: 8000
+                });
+                if (searchRes.data?.results?.length > 0) {
+                    const first = searchRes.data.results[0];
+                    videoUrl = first.url || (first.videoId ? `https://www.youtube.com/watch?v=${first.videoId}` : null);
+                }
+            } catch (err) {}
+
+            if (!videoUrl || !ytRegex.test(videoUrl)) {
+                return await conn.sendMessage(from, { text: "❌ Invalid YouTube link or no results found." }, { quoted: mek });
+            }
         }
 
         await react("⏳");
 
-        // Check if the user used an audio command (yta, ytmp3, audio)
+        // Check if the user requested audio (yta, ytmp3, audio)
         const isAudio = ["yta", "ytmp3", "audio"].includes(command?.toLowerCase());
 
-        const endpoint = isAudio ? "ytmp3-v1" : "ytmp4-v1";
-        const apiUrl = `https://jerrycoder.oggyapi.workers.dev/down/${endpoint}?url=${encodeURIComponent(videoUrl)}`;
-        
-        const { data } = await axios.get(apiUrl, { timeout: 30000 }); // 30 seconds timeout
+        let downloadUrl = null;
+        let title = isAudio ? "YouTube Audio" : "YouTube Video";
 
-        const resData = data?.result || data?.data || data;
-        const downloadUrl = resData?.download || resData?.downloadURL || resData?.download_url || resData?.url || resData?.dl_url;
-        const title = resData?.title?.trim() || (isAudio ? "YouTube Audio" : "YouTube Video");
+        // Provider 1: xenosirapis.zone.id (Primary)
+        try {
+            const endpoint = isAudio ? "ytmp3dl" : "ytmp4dl";
+            const apiUrl = `https://xenosirapis.zone.id/api/${endpoint}?url=${encodeURIComponent(videoUrl)}`;
+            const { data } = await axios.get(apiUrl, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+                timeout: 30000
+            });
+
+            if (data?.success && data?.downloadUrl) {
+                downloadUrl = data.downloadUrl;
+                if (data.title) title = data.title.trim();
+            }
+        } catch (err) {
+            console.warn("xenosirapis API failed, trying fallback:", err.message);
+        }
+
+        // Provider 2: oggyapi fallback
+        if (!downloadUrl) {
+            try {
+                const endpoint = isAudio ? "ytmp3-v1" : "ytmp4-v1";
+                const apiUrl = `https://jerrycoder.oggyapi.workers.dev/down/${endpoint}?url=${encodeURIComponent(videoUrl)}`;
+                const { data } = await axios.get(apiUrl, {
+                    headers: { 'User-Agent': 'Mozilla/5.0' },
+                    timeout: 30000
+                });
+                const resData = data?.result || data?.data || data;
+                downloadUrl = resData?.download || resData?.downloadURL || resData?.download_url || resData?.url || resData?.dl_url;
+                if (resData?.title) title = resData.title.trim();
+            } catch (err) {
+                console.warn("oggyapi fallback error:", err.message);
+            }
+        }
+
+        // Provider 3: xenoytdl-2 audio fallback
+        if (!downloadUrl && isAudio) {
+            try {
+                const { data } = await axios.get(`https://xenoytdl-2.vercel.app/api/youtube?url=${encodeURIComponent(videoUrl)}&format=mp3`, {
+                    headers: { 'User-Agent': 'Mozilla/5.0' },
+                    timeout: 20000
+                });
+                downloadUrl = data?.download;
+                if (data?.title) title = data.title.trim();
+            } catch (err) {}
+        }
 
         if (!downloadUrl) {
             throw new Error("No download URL found from the API.");
