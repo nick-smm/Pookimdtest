@@ -32,7 +32,8 @@ async (conn, mek, m, { from, pushname, reply }) => {
         menu += `┃ ֍ *ᴘʀᴇғɪx* : [ ${prefix} ]\n`;
         menu += `┃ ֍ *ᴜᴘᴛɪᴍᴇ* : ${runtime(process.uptime())}\n`;
         menu += `┃ ֍ *ᴄᴏᴍᴍᴀɴᴅs* : ${commands.length}\n`;
-        menu += `┃ ֍ *ᴍᴏᴅᴇ* : Public\n`;
+        const currentMode = (global.mode || config.MODE || "Public").toUpperCase() === "PRIVATE" ? "Private" : "Public";
+        menu += `┃ ֍ *ᴍᴏᴅᴇ* : ${currentMode}\n`;
         menu += `╰━━━━━━━━━━━━━━━━━━━━━━⬣\n\n`;
 
         let categories = {};
