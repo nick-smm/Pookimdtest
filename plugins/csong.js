@@ -405,30 +405,47 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
 
         const waveformData = createStylishWaveform(64);
 
-        // Send as voice note (mic button) if opus converted, plain audio fallback
-        let channelVoiceMsg;
-        try {
-            if (isOpusConverted) {
-                // Opus OGG → appears as voice recording button in channel
+        // Send audio to WhatsApp Channel
+        let channelVoiceMsg = null;
+        let lastSendError = null;
+
+        if (isOpusConverted) {
+            try {
                 channelVoiceMsg = await conn.sendMessage(channelJid, {
                     audio: voiceBuffer,
                     mimetype: "audio/ogg; codecs=opus",
                     ptt: true
                 });
-            } else {
-                // Fallback: send as plain audio file (no ffmpeg available)
+            } catch (pttErr) {
+                console.warn("[csong] PTT send to channel failed, trying plain audio fallback:", pttErr.message);
+                lastSendError = pttErr;
+            }
+        }
+
+        // Fallback: send as plain audio (if opus failed or conversion wasn't available)
+        if (!channelVoiceMsg) {
+            try {
+                const rawBuffer = await fs.readFile(inputPath).catch(() => voiceBuffer);
                 channelVoiceMsg = await conn.sendMessage(channelJid, {
-                    audio: voiceBuffer,
+                    audio: rawBuffer,
                     mimetype: "audio/mpeg",
                     ptt: false
                 });
+            } catch (audioErr) {
+                console.error("[csong] Plain audio send to channel also failed:", audioErr.message);
+                lastSendError = audioErr;
             }
-            console.log("[csong] Audio sent to channel:", channelJid, "ptt:", isOpusConverted, "size:", voiceBuffer.length);
-        } catch (audioErr) {
-            console.error("[csong] Channel audio send failed:", audioErr.message);
         }
 
-        // Send follow-up caption as a REPLY to the voice note in the channel (archive behavior)
+        // If message still couldn't be sent to channel, throw so user knows
+        if (!channelVoiceMsg) {
+            const errReason = lastSendError ? ` (${lastSendError.message})` : "";
+            throw new Error(`Could not post audio to channel${errReason}. Make sure the bot is an Admin in the channel with posting permissions!`);
+        }
+
+        console.log("[csong] Audio sent successfully to channel:", channelJid, "size:", voiceBuffer.length);
+
+        // Send follow-up caption to Channel
         try {
             const channelCaption =
                 `🎧 *${title}*\n` +
@@ -438,16 +455,9 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
                 `⇆   ◁   ❚❚   ▷   ↻\n` +
                 `✨ *𝁟𝗟𝗲𝘃𝗶͢𝗮𝗻𝗼 𝗔𝘂𝗱𝗶𝗼𝘀🫟🐦‍🔥🎶*`;
 
-            if (channelVoiceMsg) {
-                // Reply to the voice note — caption appears attached to audio (archive style)
-                await conn.sendMessage(channelJid, {
-                    text: channelCaption.trim()
-                }, { quoted: channelVoiceMsg });
-            } else {
-                await conn.sendMessage(channelJid, {
-                    text: channelCaption.trim()
-                });
-            }
+            await conn.sendMessage(channelJid, {
+                text: channelCaption.trim()
+            });
         } catch (capErr) {
             console.warn("[csong] Channel caption send failed:", capErr.message);
         }
