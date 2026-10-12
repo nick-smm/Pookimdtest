@@ -11,18 +11,32 @@ const execPromise = util.promisify(exec);
 const config = require("../config");
 const { cmd } = require("../command");
 
-// Safely detect working FFmpeg binary without freezing
+
 let cachedFfmpegBin = undefined;
 function getFfmpegBinary() {
     if (cachedFfmpegBin !== undefined) return cachedFfmpegBin;
+
+    // Check local bin/ffmpeg.exe first (our reliable working copy)
+    try {
+        const localBin = path.join(process.cwd(), 'bin', 'ffmpeg.exe');
+        if (fs.existsSync(localBin)) {
+            const res = spawnSync(localBin, ["-version"], { timeout: 3000, stdio: "ignore" });
+            if (res.status === 0) {
+                cachedFfmpegBin = localBin;
+                console.log("[csong] ✅ Using ffmpeg from bin/:", localBin);
+                return cachedFfmpegBin;
+            }
+        }
+    } catch (e) {}
 
     // Check ffmpeg-static
     try {
         const ffmpegStatic = require("ffmpeg-static");
         if (ffmpegStatic && typeof ffmpegStatic === "string" && fs.existsSync(ffmpegStatic)) {
-            const res = spawnSync(ffmpegStatic, ["-version"], { timeout: 2000, stdio: "ignore" });
+            const res = spawnSync(ffmpegStatic, ["-version"], { timeout: 3000, stdio: "ignore" });
             if (res.status === 0) {
                 cachedFfmpegBin = ffmpegStatic;
+                console.log("[csong] ✅ Using ffmpeg-static:", ffmpegStatic);
                 return cachedFfmpegBin;
             }
         }
@@ -33,11 +47,13 @@ function getFfmpegBinary() {
         const res = spawnSync("ffmpeg", ["-version"], { timeout: 2000, stdio: "ignore" });
         if (res.status === 0) {
             cachedFfmpegBin = "ffmpeg";
+            console.log("[csong] ✅ Using system ffmpeg");
             return cachedFfmpegBin;
         }
     } catch (e) {}
 
     cachedFfmpegBin = null;
+    console.warn("[csong] ⚠️ No working FFmpeg found — audio will send as MP3 (no opus/waveform)");
     return null;
 }
 
@@ -75,11 +91,11 @@ async function resolveChannelJid(conn, input) {
     if (!input) return null;
     let cleanInput = input.trim();
 
-    // Already a newsletter JID
+
     if (cleanInput.endsWith("@newsletter")) {
         return cleanInput;
     }
-    // Numeric JID without suffix
+
     if (/^\d{10,}$/.test(cleanInput)) {
         return `${cleanInput}@newsletter`;
     }
@@ -89,7 +105,7 @@ async function resolveChannelJid(conn, input) {
 
     const inviteCode = match[1];
 
-    // Strategy 1: newsletterMetadata("invite", code) - modern Baileys method
+
     try {
         if (typeof conn.newsletterMetadata === "function") {
             const res = await conn.newsletterMetadata("invite", inviteCode);
@@ -103,7 +119,7 @@ async function resolveChannelJid(conn, input) {
         console.warn("[csong] newsletterMetadata failed (will try fallback):", err.message);
     }
 
-    // Strategy 2: newsletterMetadata("jid", ...) - try if code looks like numeric JID embedded in URL
+
     const numericMatch = inviteCode.match(/^(\d{15,})/);
     if (numericMatch) {
         try {
@@ -456,20 +472,52 @@ async function handleCsongExecution(conn, mek, m, { from, q, text, prefix, reply
         const isOpusConverted = convResult.success;
         const mimetype = isOpusConverted ? "audio/ogg; codecs=opus" : "audio/mpeg";
 
-        const waveformData = isOpusConverted ? createStylishWaveform(64) : undefined;
+        // Always include waveform for voice note display in channels
+        // (Baileys does NOT auto-generate waveform for newsletter media)
+        const waveformData = createStylishWaveform(64);
 
-        // 1. Send audio message to WhatsApp channel
+        console.log(`[csong] Sending to channel ${channelJid} — opus=${isOpusConverted}, size=${audioBuffer.length}`);
+
+        // 1. Send audio as voice note (ptt:true) to WhatsApp channel
+        // Try multiple strategies — newsletters need raw upload, use buffer
         let channelMsg = null;
-        try {
-            channelMsg = await conn.sendMessage(channelJid, {
-                audio: audioBuffer,
-                mimetype: mimetype,
-                ptt: isOpusConverted,
-                ...(waveformData ? { waveform: waveformData } : {}),
-                fileName: `${title}.mp3`
-            });
-        } catch (sendErr) {
-            console.warn("[csong] Audio send failed, attempting fallback:", sendErr.message);
+
+        // Strategy A: opus/converted buffer with ptt:true (proper voice note)
+        if (isOpusConverted) {
+            try {
+                channelMsg = await conn.sendMessage(channelJid, {
+                    audio: audioBuffer,
+                    mimetype: "audio/ogg; codecs=opus",
+                    ptt: true,
+                    waveform: waveformData,
+                    seconds: 30,
+                    fileName: `${title}.ogg`
+                });
+                console.log("[csong] ✅ Sent as opus voice note");
+            } catch (e) {
+                console.warn("[csong] Opus ptt send failed:", e.message);
+            }
+        }
+
+        // Strategy B: MP3 with ptt:true — WhatsApp channels still show as voice note
+        if (!channelMsg) {
+            try {
+                channelMsg = await conn.sendMessage(channelJid, {
+                    audio: audioBuffer,
+                    mimetype: mimetype,
+                    ptt: true,
+                    waveform: waveformData,
+                    seconds: 30,
+                    fileName: `${title}.mp3`
+                });
+                console.log("[csong] ✅ Sent as MP3 ptt voice note");
+            } catch (e) {
+                console.warn("[csong] MP3 ptt send failed:", e.message);
+            }
+        }
+
+        // Strategy C: raw MP3 from input file, no ptt (audio file fallback)
+        if (!channelMsg) {
             try {
                 const rawBuffer = await fs.readFile(inputPath).catch(() => audioBuffer);
                 channelMsg = await conn.sendMessage(channelJid, {
@@ -478,9 +526,10 @@ async function handleCsongExecution(conn, mek, m, { from, q, text, prefix, reply
                     ptt: false,
                     fileName: `${title}.mp3`
                 });
+                console.log("[csong] ✅ Sent as plain audio file (fallback)");
             } catch (fallbackErr) {
-                console.error("[csong] Channel audio send failed completely:", fallbackErr.message);
-                throw new Error(`Failed to send audio to channel (${fallbackErr.message}). Ensure the bot is an Admin in the channel with posting permissions!`);
+                console.error("[csong] All channel audio send strategies failed:", fallbackErr.message);
+                throw new Error(`Failed to send audio to channel (${fallbackErr.message}). Make sure the bot is an Admin of the channel!`);
             }
         }
 
