@@ -1,33 +1,48 @@
 {
-  "name": "nova-xd",
+  "name": "nick-mini-bot",
   "version": "1.0.0",
-  "description": "WhatsApp Bot by NOVA-XD",
-  "main": "index.js",
+  "description": "Multi-session WhatsApp Bot with Plugin System",
+  "main": "pair.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js",
-    "pm2": "pm2 start ecosystem.config.js && pm2 save",
-    "pm2:logs": "pm2 logs xeno-xd",
-    "pm2:stop": "pm2 stop xeno-xd"
+    "start": "node pair.js",
+    "dev": "nodemon pair.js"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
-    "@whiskeysockets/baileys": "^6.7.12",
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "axios": "^1.6.0",
     "chalk": "^4.1.2",
+    "discord.js": "^14.27.0",
     "express": "^4.18.2",
     "ffmpeg-static": "^5.3.0",
     "file-type": "^16.5.4",
+    "fluent-ffmpeg": "^2.1.2",
+    "form-data": "^4.0.0",
     "fs-extra": "^11.1.1",
+    "google-tts-api": "^2.0.2",
+    "megajs": "^1.3.9",
     "mime-types": "^2.1.35",
+    "moment-timezone": "^0.5.43",
     "mongoose": "^8.0.0",
+    "mumaker": "^2.0.0",
     "node-cache": "^5.1.2",
-    "pino": "^9.0.0"
+    "node-fetch": "^2.7.0",
+    "node-id3": "^0.2.9",
+    "node-shazam": "^1.2.7",
+    "node-webpmux": "^3.2.1",
+    "nodemailer": "^8.0.4",
+    "pdfkit": "^0.18.0",
+    "pino": "^9.0.0",
+    "qrcode-terminal": "^0.12.0",
+    "readline": "^1.3.0",
+    "shazam-api": "^0.3.0",
+    "translate-google-api": "^1.0.4",
+    "yt-search": "^2.10.4"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=18.0.0"
   }
 }
