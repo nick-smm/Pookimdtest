@@ -75,56 +75,92 @@ async function resolveChannelJid(conn, input) {
     if (!input) return null;
     let cleanInput = input.trim();
 
+    // Already a newsletter JID
     if (cleanInput.endsWith("@newsletter")) {
         return cleanInput;
     }
+    // Numeric JID without suffix
     if (/^\d{10,}$/.test(cleanInput)) {
         return `${cleanInput}@newsletter`;
     }
 
     const match = cleanInput.match(/(?:whatsapp\.com\/channel\/|channel\/)([a-zA-Z0-9_-]+)/i);
-    if (match && match[1]) {
-        const inviteCode = match[1];
+    if (!match || !match[1]) return null;
+
+    const inviteCode = match[1];
+
+    // Strategy 1: newsletterMetadata("invite", code) - modern Baileys method
+    try {
+        if (typeof conn.newsletterMetadata === "function") {
+            const res = await conn.newsletterMetadata("invite", inviteCode);
+            const resolvedId = res?.id || res?.jid;
+            if (resolvedId) {
+                console.log("[csong] Channel resolved via newsletterMetadata:", resolvedId);
+                return resolvedId.endsWith("@newsletter") ? resolvedId : `${resolvedId}@newsletter`;
+            }
+        }
+    } catch (err) {
+        console.warn("[csong] newsletterMetadata failed (will try fallback):", err.message);
+    }
+
+    // Strategy 2: newsletterMetadata("jid", ...) - try if code looks like numeric JID embedded in URL
+    const numericMatch = inviteCode.match(/^(\d{15,})/);
+    if (numericMatch) {
         try {
             if (typeof conn.newsletterMetadata === "function") {
-                const res = await conn.newsletterMetadata("invite", inviteCode);
-                const resolvedId = res?.id || res?.jid;
-                if (resolvedId) {
-                    return resolvedId.endsWith("@newsletter") ? resolvedId : `${resolvedId}@newsletter`;
+                const jidCandidate = numericMatch[1] + "@newsletter";
+                const res = await conn.newsletterMetadata("jid", jidCandidate);
+                if (res?.id) {
+                    console.log("[csong] Channel resolved via newsletterMetadata jid:", res.id);
+                    return res.id.endsWith("@newsletter") ? res.id : `${res.id}@newsletter`;
                 }
             }
         } catch (err) {
-            console.warn("[csong] newsletterMetadata invite resolution failed:", err.message);
-        }
-
-        try {
-            if (typeof conn.query === "function") {
-                const res = await conn.query({
-                    tag: 'iq',
-                    attrs: {
-                        to: '@newsletter',
-                        type: 'get',
-                        xmlns: 'newsletter',
-                    },
-                    content: [{
-                        tag: 'newsletter',
-                        attrs: {
-                            type: 'invite',
-                            key: inviteCode
-                        }
-                    }]
-                });
-                const newsletterNode = res?.content?.find?.(x => x?.tag === 'newsletter');
-                const resolvedId = newsletterNode?.attrs?.id;
-                if (resolvedId) {
-                    return resolvedId.endsWith("@newsletter") ? resolvedId : `${resolvedId}@newsletter`;
-                }
-            }
-        } catch (err) {
-            console.error("[csong] Query failed to resolve channel:", err.message);
+            console.warn("[csong] newsletterMetadata jid fallback failed:", err.message);
         }
     }
 
+    // Strategy 3: Raw IQ query fallback
+    try {
+        if (typeof conn.query === "function") {
+            const res = await conn.query({
+                tag: 'iq',
+                attrs: { to: '@newsletter', type: 'get', xmlns: 'newsletter' },
+                content: [{
+                    tag: 'newsletter',
+                    attrs: { type: 'invite', key: inviteCode }
+                }]
+            });
+            const newsletterNode = res?.content?.find?.(x => x?.tag === 'newsletter');
+            const resolvedId = newsletterNode?.attrs?.id;
+            if (resolvedId) {
+                console.log("[csong] Channel resolved via raw IQ query:", resolvedId);
+                return resolvedId.endsWith("@newsletter") ? resolvedId : `${resolvedId}@newsletter`;
+            }
+        }
+    } catch (err) {
+        console.warn("[csong] Raw IQ query failed:", err.message);
+    }
+
+    // Strategy 4: Scrape whatsapp.com/channel page to find the newsletter JID
+    try {
+        const { data: html } = await axios.get(`https://whatsapp.com/channel/${inviteCode}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+            timeout: 8000
+        });
+        // WhatsApp channel pages embed the JID in a meta tag or JSON data
+        const jidFromMeta = html.match(/newsletter_jid["\s:]+["']?(\d{15,}@newsletter)["']?/i)?.[1]
+            || html.match(/(\d{15,})@newsletter/)?.[0];
+        if (jidFromMeta) {
+            const jid = jidFromMeta.includes('@newsletter') ? jidFromMeta : `${jidFromMeta}@newsletter`;
+            console.log("[csong] Channel resolved via web scrape:", jid);
+            return jid;
+        }
+    } catch (err) {
+        console.warn("[csong] Web scrape channel resolve failed:", err.message);
+    }
+
+    console.error("[csong] All channel resolution strategies failed for:", cleanInput);
     return null;
 }
 
