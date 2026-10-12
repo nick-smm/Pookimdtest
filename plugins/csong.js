@@ -277,36 +277,83 @@ async function fetchAudioDownloadUrl(videoUrl) {
     throw new Error("Unable to obtain download URL from audio servers.");
 }
 
-async function convertToVoiceNote(inputPath, outputPath, title, artist) {
+// Generate a realistic music-shaped waveform (64 bytes, 0–100)
+// Looks like the waveform bars on a real WhatsApp voice note
+function createVoiceWaveform() {
+    const buf = Buffer.alloc(64);
+    // Create a natural music waveform: loud in middle, quieter at ends
+    for (let i = 0; i < 64; i++) {
+        const pos = i / 63; // 0 to 1
+        // Fade in and out at edges, peak in middle with random variation
+        const envelope = Math.sin(pos * Math.PI) * 0.7 + 0.3;
+        const noise = (Math.random() * 0.5 + 0.5); // 0.5–1.0
+        // Add some beat-like peaks every ~4 samples
+        const beat = (i % 4 === 0) ? 1.2 : 1.0;
+        const val = Math.min(100, Math.round(envelope * noise * beat * 100));
+        buf[i] = val;
+    }
+    return buf;
+}
+
+// Get audio duration in seconds using ffprobe
+async function getAudioDuration(filePath) {
+    const ffBin = getFfmpegBinary();
+    if (!ffBin) return 30;
+    // Replace ffmpeg with ffprobe in the same folder
+    const ffprobeBin = ffBin.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1');
+    try {
+        if (fs.existsSync(ffprobeBin)) {
+            const { stdout } = await execPromise(
+                `"${ffprobeBin}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
+                { timeout: 5000, windowsHide: true }
+            );
+            const secs = parseFloat(stdout.trim());
+            if (!isNaN(secs) && secs > 0) return Math.round(secs);
+        }
+    } catch (e) {}
+    // Estimate: OGG/Opus at 48kbps ≈ fileSize * 8 / 48000
+    try {
+        const stat = await fs.stat(filePath);
+        return Math.max(1, Math.round(stat.size * 8 / 48000));
+    } catch (e) {}
+    return 30;
+}
+
+async function convertToVoiceNote(inputPath, outputPath) {
     const ffBin = getFfmpegBinary();
     if (!ffBin) {
-        return { success: false, buffer: await fs.readFile(inputPath) };
+        return { success: false, buffer: await fs.readFile(inputPath), seconds: 30 };
     }
 
-    const safeTitle = (title || "Audio").replace(/["'$`\\]/g, "");
-    const safeArtist = (artist || config.botName || "Spotify").replace(/["'$`\\]/g, "");
-
+    // Convert to OGG/Opus — same format as WhatsApp voice recordings
+    // -ac 1 = mono (voice), -ar 48000 = 48kHz sample rate, -b:a 48k = 48kbps bitrate
+    // NO metadata tags — real voice notes don't have them
     try {
-        const cmd1 = `"${ffBin}" -y -i "${inputPath}" -vn -c:a libopus -b:a 48k -ac 1 -ar 48000 -metadata title="${safeTitle}" -metadata artist="${safeArtist}" "${outputPath}"`;
-        await execPromise(cmd1, { timeout: 12000, windowsHide: true });
+        const cmd = `"${ffBin}" -y -i "${inputPath}" -vn -c:a libopus -b:a 48k -ac 1 -ar 48000 "${outputPath}"`;
+        await execPromise(cmd, { timeout: 30000, windowsHide: true });
         if (await fs.pathExists(outputPath) && (await fs.stat(outputPath)).size > 0) {
-            return { success: true, buffer: await fs.readFile(outputPath) };
+            const seconds = await getAudioDuration(outputPath);
+            return { success: true, buffer: await fs.readFile(outputPath), seconds };
         }
-    } catch (err1) {
-        console.warn("[csong] FFmpeg libopus conversion failed:", err1.message);
+    } catch (err) {
+        console.warn("[csong] FFmpeg libopus conversion failed:", err.message);
     }
 
+    // Fallback: try plain opus codec name
     try {
-        const cmd2 = `"${ffBin}" -y -i "${inputPath}" -vn -c:a opus -b:a 48k -ac 1 -ar 48000 -metadata title="${safeTitle}" -metadata artist="${safeArtist}" "${outputPath}"`;
-        await execPromise(cmd2, { timeout: 12000, windowsHide: true });
+        const cmd2 = `"${ffBin}" -y -i "${inputPath}" -vn -c:a opus -b:a 48k -ac 1 -ar 48000 "${outputPath}"`;
+        await execPromise(cmd2, { timeout: 30000, windowsHide: true });
         if (await fs.pathExists(outputPath) && (await fs.stat(outputPath)).size > 0) {
-            return { success: true, buffer: await fs.readFile(outputPath) };
+            const seconds = await getAudioDuration(outputPath);
+            return { success: true, buffer: await fs.readFile(outputPath), seconds };
         }
     } catch (err2) {
         console.warn("[csong] FFmpeg opus fallback failed:", err2.message);
     }
 
-    return { success: false, buffer: await fs.readFile(inputPath) };
+    // No conversion — send MP3 as-is
+    const seconds = await getAudioDuration(inputPath).catch(() => 30);
+    return { success: false, buffer: await fs.readFile(inputPath), seconds };
 }
 
 const activeCsongRequests = new Set();
@@ -467,56 +514,56 @@ async function handleCsongExecution(conn, mek, m, { from, q, text, prefix, reply
 
         await conn.sendMessage(chatJid, { react: { text: "🎙️", key: mek?.key || m?.key } });
 
-        const convResult = await convertToVoiceNote(inputPath, outputPath, title, author);
+        const convResult = await convertToVoiceNote(inputPath, outputPath);
         const audioBuffer = convResult.buffer;
         const isOpusConverted = convResult.success;
-        const mimetype = isOpusConverted ? "audio/ogg; codecs=opus" : "audio/mpeg";
+        const audioDuration = convResult.seconds || 30;
 
-        // Always include waveform for voice note display in channels
-        // (Baileys does NOT auto-generate waveform for newsletter media)
-        const waveformData = createStylishWaveform(64);
+        // Generate a music-shaped waveform — same as real WhatsApp voice notes
+        const waveformData = createVoiceWaveform();
 
-        console.log(`[csong] Sending to channel ${channelJid} — opus=${isOpusConverted}, size=${audioBuffer.length}`);
+        console.log(`[csong] Sending to ${channelJid} — opus=${isOpusConverted}, duration=${audioDuration}s, size=${audioBuffer.length}b`);
 
-        // 1. Send audio as voice note (ptt:true) to WhatsApp channel
-        // Try multiple strategies — newsletters need raw upload, use buffer
+        // 1. Send as a WhatsApp voice note (ptt:true) to the channel
+        // IMPORTANT: NO fileName — real WhatsApp voice recordings have no filename!
+        // This is what makes it look like a recorded voice note vs an audio file.
         let channelMsg = null;
 
-        // Strategy A: opus/converted buffer with ptt:true (proper voice note)
+        // Strategy A: proper OGG/Opus — exactly like mic-recorded voice note
         if (isOpusConverted) {
             try {
                 channelMsg = await conn.sendMessage(channelJid, {
                     audio: audioBuffer,
                     mimetype: "audio/ogg; codecs=opus",
-                    ptt: true,
-                    waveform: waveformData,
-                    seconds: 30,
-                    fileName: `${title}.ogg`
+                    ptt: true,           // <- makes it a voice note
+                    waveform: waveformData, // <- shows waveform bars
+                    seconds: audioDuration  // <- real duration
+                    // NO fileName — voice recordings don't have one
                 });
-                console.log("[csong] ✅ Sent as opus voice note");
+                console.log("[csong] ✅ Sent as OGG/Opus voice note (mic-style)");
             } catch (e) {
-                console.warn("[csong] Opus ptt send failed:", e.message);
+                console.warn("[csong] Opus voice note send failed:", e.message);
             }
         }
 
-        // Strategy B: MP3 with ptt:true — WhatsApp channels still show as voice note
+        // Strategy B: MP3 with ptt:true — still shows as voice note in WhatsApp
         if (!channelMsg) {
             try {
                 channelMsg = await conn.sendMessage(channelJid, {
                     audio: audioBuffer,
-                    mimetype: mimetype,
+                    mimetype: "audio/mpeg",
                     ptt: true,
                     waveform: waveformData,
-                    seconds: 30,
-                    fileName: `${title}.mp3`
+                    seconds: audioDuration
+                    // NO fileName
                 });
-                console.log("[csong] ✅ Sent as MP3 ptt voice note");
+                console.log("[csong] ✅ Sent as MP3 voice note");
             } catch (e) {
-                console.warn("[csong] MP3 ptt send failed:", e.message);
+                console.warn("[csong] MP3 voice note send failed:", e.message);
             }
         }
 
-        // Strategy C: raw MP3 from input file, no ptt (audio file fallback)
+        // Strategy C: last resort — plain audio file (won't look like voice note)
         if (!channelMsg) {
             try {
                 const rawBuffer = await fs.readFile(inputPath).catch(() => audioBuffer);
@@ -524,12 +571,12 @@ async function handleCsongExecution(conn, mek, m, { from, q, text, prefix, reply
                     audio: rawBuffer,
                     mimetype: "audio/mpeg",
                     ptt: false,
-                    fileName: `${title}.mp3`
+                    seconds: audioDuration
                 });
-                console.log("[csong] ✅ Sent as plain audio file (fallback)");
+                console.log("[csong] ✅ Sent as audio file (fallback — won't show as voice note)");
             } catch (fallbackErr) {
-                console.error("[csong] All channel audio send strategies failed:", fallbackErr.message);
-                throw new Error(`Failed to send audio to channel (${fallbackErr.message}). Make sure the bot is an Admin of the channel!`);
+                console.error("[csong] All channel send strategies failed:", fallbackErr.message);
+                throw new Error(`Failed to send to channel: ${fallbackErr.message}. Make sure the bot is a channel Admin!`);
             }
         }
 
