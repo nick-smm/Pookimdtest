@@ -1,6 +1,8 @@
 const { cmd } = require('../command');
 const axios = require('axios');
 
+const BOT_NAME = "𝑳𝜺𝝂𝜾⃮⃯⃔𝜶𝜼𝝄♪";
+
 cmd({
     pattern: "song",
     alias: ["play", "mp3", "music"],
@@ -74,11 +76,27 @@ async (conn, mek, m, { from, q, prefix }) => {
             }
         }
 
-        // React and send simple message with only title
+        // If no thumbnail yet (direct link or missing), build it from the video id
+        if (!thumbnail && videoUrl) {
+            const idMatch = videoUrl.match(/(?:v=|youtu\.be\/|shorts\/)([A-Za-z0-9_-]{11})/);
+            if (idMatch) thumbnail = `https://i.ytimg.com/vi/${idMatch[1]}/hqdefault.jpg`;
+        }
+
+        // React and send thumbnail + title + bot name watermark
         await conn.sendMessage(from, { react: { text: "📥", key: mek.key } });
-        await conn.sendMessage(from, {
-            text: `*Downloading :* ${title}`
-        }, { quoted: mek });
+        const captionText = `*Downloading :* ${title}\n\n> ${BOT_NAME}`;
+        if (thumbnail) {
+            try {
+                await conn.sendMessage(from, {
+                    image: { url: thumbnail },
+                    caption: captionText
+                }, { quoted: mek });
+            } catch (imgErr) {
+                await conn.sendMessage(from, { text: captionText }, { quoted: mek });
+            }
+        } else {
+            await conn.sendMessage(from, { text: captionText }, { quoted: mek });
+        }
 
         // Retrieve download URL using xenosirapis ytmp3dl
         let downloadUrl = null;
@@ -128,12 +146,23 @@ async (conn, mek, m, { from, q, prefix }) => {
             return await conn.sendMessage(from, { text: "Failed to retrieve download link from audio servers." }, { quoted: mek });
         }
 
-        // Send Audio MP3
+        // Send Audio MP3 (with title + bot name watermark card)
         await conn.sendMessage(from, {
             audio: { url: downloadUrl },
             mimetype: "audio/mpeg",
             fileName: `${title}.mp3`,
-            ptt: false
+            ptt: false,
+            contextInfo: {
+                externalAdReply: {
+                    title: title,
+                    body: BOT_NAME,
+                    thumbnailUrl: thumbnail || undefined,
+                    sourceUrl: videoUrl,
+                    mediaType: 1,
+                    renderLargerThumbnail: true,
+                    showAdAttribution: false
+                }
+            }
         }, { quoted: mek });
 
         await conn.sendMessage(from, { react: { text: "✅", key: mek.key } });
