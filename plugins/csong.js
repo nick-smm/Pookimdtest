@@ -54,6 +54,9 @@ async function resolveChannelJid(conn, input) {
     return null;
 }
 
+// Brand line shown at the bottom of the channel post (change to anything, e.g. "Sputify👱🏼🩰🎶")
+const CHANNEL_BRAND = config.watermark || config.botName || "NICK MD";
+
 const activeCsongRequests = new Set();
 
 cmd({
@@ -244,8 +247,15 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
 
         // 2. Reply to that voice note in the channel with the song title only
         if (channelVoiceMsg) {
+            const channelCaption =
+                `*${title}*\n` +
+                (author ? `*Artist:* ${author}\n` : ``) +
+                `━━━━━━━•────────────────\n` +
+                `⇆   ◁   ❚❚   ▷   ↻\n` +
+                `*${CHANNEL_BRAND}*`;
+
             await conn.sendMessage(channelJid, {
-                text: `🎵 *${title}*`
+                text: channelCaption
             }, { quoted: channelVoiceMsg });
         }
 
