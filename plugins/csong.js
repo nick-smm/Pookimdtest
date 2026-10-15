@@ -1,13 +1,39 @@
 // Dev Xeno Exe - NICK XD MD Handler
 const axios = require("axios");
-const { exec } = require("child_process");
+const { exec, execFile } = require("child_process");
 const fs = require("fs-extra");
 const path = require("path");
 const util = require("util");
 const crypto = require("crypto");
 const { pipeline } = require("stream/promises");
 const execPromise = util.promisify(exec);
-const ffmpegPath = require("ffmpeg-static");
+const execFilePromise = util.promisify(execFile);
+let ffmpegStaticPath = null;
+try { ffmpegStaticPath = require("ffmpeg-static"); } catch (e) { /* optional */ }
+
+// Find a working ffmpeg: bundled binary first, then system ffmpeg
+let cachedFfmpeg = null;
+async function getFfmpeg() {
+    if (cachedFfmpeg) return cachedFfmpeg;
+    const candidates = [ffmpegStaticPath, process.env.FFMPEG_PATH, "ffmpeg", "/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"].filter(Boolean);
+    for (const bin of candidates) {
+        try {
+            if (path.isAbsolute(bin) && await fs.pathExists(bin)) await fs.chmod(bin, 0o755).catch(() => { });
+            await execFilePromise(bin, ["-version"], { timeout: 10000 });
+            cachedFfmpeg = bin;
+            console.log("[csong] Using ffmpeg:", bin);
+            return bin;
+        } catch (e) { /* try next */ }
+    }
+    throw new Error("ffmpeg not found. Run npm install (ffmpeg-static) or set FFMPEG_PATH.");
+}
+
+// Run ffmpeg without shell (safe paths with spaces); returns stderr text
+async function runFfmpeg(args) {
+    const bin = await getFfmpeg();
+    const { stderr } = await execFilePromise(bin, args, { maxBuffer: 1024 * 1024 * 20, timeout: 120000 });
+    return stderr || "";
+}
 const yts = require("yt-search");
 
 const config = require("../config");
@@ -199,26 +225,35 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
 
         await conn.sendMessage(from, { react: { text: "🎙️", key: mek.key } });
 
-        const ffBin = ffmpegPath || "ffmpeg";
-
         // Convert to OGG/Opus mono 48kHz (the only format WhatsApp accepts for PTT voice notes)
-        const cmdStr = `"${ffBin}" -y -i "${inputPath}" -vn -map_metadata -1 -c:a libopus -b:a 48k -ar 48000 -ac 1 -application voip -f ogg "${outputPath}"`;
+        const baseArgs = ["-y", "-i", inputPath, "-vn", "-map_metadata", "-1", "-ar", "48000", "-ac", "1", "-b:a", "48k"];
+        const encoders = [
+            ["-c:a", "libopus", "-application", "voip"],
+            ["-c:a", "libopus"],
+            ["-c:a", "opus", "-strict", "-2"]   // built-in encoder fallback
+        ];
 
         let voiceBuffer;
         let seconds = 0;
+        let lastErr;
 
-        try {
-            const { stderr } = await execPromise(cmdStr, { maxBuffer: 1024 * 1024 * 20 });
-            // Real duration from ffmpeg's last "time=" progress line (fallback: "Duration:")
-            const times = [...(stderr || "").matchAll(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/g)];
-            if (times.length) {
-                const t = times[times.length - 1];
-                seconds = Math.round(+t[1] * 3600 + +t[2] * 60 + parseFloat(t[3]));
+        for (const enc of encoders) {
+            try {
+                await fs.remove(outputPath).catch(() => { });
+                const stderr = await runFfmpeg([...baseArgs, ...enc, "-f", "ogg", outputPath]);
+                const times = [...stderr.matchAll(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/g)];
+                if (times.length) {
+                    const t = times[times.length - 1];
+                    seconds = Math.round(+t[1] * 3600 + +t[2] * 60 + parseFloat(t[3]));
+                }
+                lastErr = null;
+                break;
+            } catch (err) {
+                lastErr = err;
+                console.error("[csong] FFmpeg attempt failed:", (err.stderr || err.message || "").toString().slice(-300));
             }
-        } catch (err) {
-            console.error("FFmpeg execution error:", err.message);
-            throw new Error("Audio conversion to voice note failed (ffmpeg/libopus).");
         }
+        if (lastErr) throw new Error("Audio conversion failed: " + (lastErr.message || "").split("\n")[0]);
 
         if (!(await fs.pathExists(outputPath))) throw new Error("Converted voice note file not found.");
         voiceBuffer = await fs.readFile(outputPath);
