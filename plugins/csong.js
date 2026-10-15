@@ -1,4 +1,4 @@
-// Dev Xeno Exe - NICK XD MD Handler
+// Dev Xeno Exe - NICK XD MD Handler (merged csong)
 const axios = require("axios");
 const { execFile } = require("child_process");
 const fs = require("fs-extra");
@@ -7,10 +7,10 @@ const util = require("util");
 const crypto = require("crypto");
 const { pipeline } = require("stream/promises");
 const execFilePromise = util.promisify(execFile);
-const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
 const ffmpegPath = require("ffmpeg-static");
 const yts = require("yt-search");
 
+const config = require("../config");
 const { cmd } = require("../command");
 
 function getYouTubeId(url) {
@@ -19,145 +19,39 @@ function getYouTubeId(url) {
     return (match && match[2].length === 11) ? match[2] : null;
 }
 
-/**
- * Generates dynamic audio waveform data for WhatsApp voice notes.
- */
+/** Generates audio waveform data for WhatsApp voice notes. */
 function createStylishWaveform(length = 64) {
     const waveform = new Uint8Array(length);
     for (let i = 0; i < length; i++) {
         const progress = i / length;
         const envelope = Math.sin(progress * Math.PI);
         const beats = Math.abs(Math.sin(i * 0.35) * Math.cos(i * 0.15));
-        const randomNoise = (Math.random() * 0.2);
+        const randomNoise = Math.random() * 0.2;
         const height = Math.floor((envelope * 0.5 + beats * 0.4 + randomNoise * 0.1) * 95) + 5;
         waveform[i] = Math.min(100, Math.max(5, height));
     }
     return Buffer.from(waveform);
 }
 
-/**
- * Decodes the converted voice note and returns the real duration (seconds)
- * and a 64-bar waveform built from the actual loudness of the audio,
- * so WhatsApp shows it exactly like a natively recorded voice message.
- */
-async function getVoiceNoteInfo(ffBin, filePath, bars = 64) {
-    const RATE = 8000;
-    const { stdout } = await execFilePromise(ffBin, [
-        "-v", "error", "-i", filePath, "-vn", "-ac", "1", "-ar", String(RATE), "-f", "s16le", "-"
-    ], { encoding: "buffer", maxBuffer: 128 * 1024 * 1024, timeout: 120000 });
-
-    const total = Math.floor(stdout.length / 2);
-    if (total < bars) throw new Error("Audio too short to analyse");
-
-    const seconds = Math.max(1, Math.round(total / RATE));
-    const per = Math.floor(total / bars);
-    const rms = new Array(bars).fill(0);
-    for (let b = 0; b < bars; b++) {
-        let sum = 0;
-        for (let i = b * per; i < (b + 1) * per; i++) {
-            const v = stdout.readInt16LE(i * 2) / 32768;
-            sum += v * v;
-        }
-        rms[b] = Math.sqrt(sum / per);
-    }
-    const max = Math.max(...rms) || 1;
-    // sqrt-compress so quiet parts are still visible, scale to WhatsApp's 0-100 range
-    const waveform = Uint8Array.from(rms.map(v => Math.min(100, Math.max(4, Math.round(Math.sqrt(v / max) * 100)))));
-    return { seconds, waveform };
-}
-
 async function resolveChannelJid(conn, input) {
     if (!input) return null;
-    let cleanInput = input.trim();
+    const cleanInput = input.trim();
 
-    if (cleanInput.endsWith("@newsletter")) {
-        return cleanInput;
-    }
-    if (/^\d{10,}$/.test(cleanInput)) {
-        return `${cleanInput}@newsletter`;
-    }
+    if (cleanInput.endsWith("@newsletter")) return cleanInput;
+    if (/^\d{10,}$/.test(cleanInput)) return `${cleanInput}@newsletter`;
 
     const match = cleanInput.match(/whatsapp\.com\/channel\/([a-zA-Z0-9_-]+)/i);
     if (match && match[1]) {
-        const inviteCode = match[1];
         try {
             if (typeof conn.newsletterMetadata === "function") {
-                const res = await conn.newsletterMetadata("invite", inviteCode);
-                if (res && res.id) {
-                    return res.id;
-                }
+                const res = await conn.newsletterMetadata("invite", match[1]);
+                if (res && res.id) return res.id;
             }
         } catch (err) {
             console.error("Failed to resolve channel JID:", err.message);
         }
     }
-
     return null;
-}
-
-
-async function downloadQuotedMedia(quoted) {
-    const msg = quoted.msg || quoted;
-    const type = quoted.type === "videoMessage" ? "video" : "audio";
-    const stream = await downloadContentFromMessage(msg, type);
-    const chunks = [];
-    for await (const chunk of stream) chunks.push(chunk);
-    return Buffer.concat(chunks);
-}
-
-async function searchYouTube(query) {
-    // 1) YouTube URL given -> use it directly
-    const ytId = getYouTubeId(query);
-    if (ytId) {
-        try {
-            const v = await yts({ videoId: ytId });
-            return { url: `https://youtu.be/${ytId}`, title: v?.title, duration: v?.timestamp, author: v?.author?.name };
-        } catch {
-            return { url: `https://youtu.be/${ytId}` };
-        }
-    }
-    // 2) external search API (may be down / return empty)
-    try {
-        const { data } = await axios.get(`https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(query)}`, { timeout: 8000 });
-        const item = data?.results?.[0];
-        if (item?.url) {
-            return {
-                url: item.url,
-                title: item.title,
-                duration: item.duration,
-                author: typeof item.author === "object" ? item.author?.name : item.author
-            };
-        }
-    } catch (err) {
-        console.error("ytsearch API failed:", err.message);
-    }
-    // 3) yt-search fallback (also used when the API returns no results)
-    const res = await yts(query);
-    const v = res.videos?.[0];
-    if (!v) throw new Error("No search results found for: " + query);
-    return { url: v.url, title: v.title, duration: v.timestamp, author: v.author?.name };
-}
-
-async function getAudioDownloadUrl(videoUrl) {
-    const providers = [
-        async () => {
-            const { data } = await axios.get(`https://xenoytdl-2.vercel.app/api/youtube?url=${encodeURIComponent(videoUrl)}&format=mp3`, { timeout: 15000 });
-            return { url: data?.download, title: data?.title };
-        },
-        async () => {
-            const { data } = await axios.get(`https://api.dreaded.site/api/ytdl/video?url=${encodeURIComponent(videoUrl)}`, { timeout: 15000 });
-            return { url: data?.result?.download?.url || data?.download };
-        }
-    ];
-    for (const provider of providers) {
-        try {
-            const r = await provider();
-            if (r?.url) return r;
-        } catch (err) {
-            console.error("Download provider failed:", err.message);
-        }
-    }
-    throw new Error("Failed to retrieve downloadable audio URL from servers.");
 }
 
 const activeCsongRequests = new Set();
@@ -165,7 +59,7 @@ const activeCsongRequests = new Set();
 cmd({
     pattern: "csong",
     alias: ["channelsong", "songchannel"],
-    desc: "Send audio/song to WhatsApp Channel with waveforms",
+    desc: "Send audio/song to WhatsApp Channel as voice note",
     category: "download",
     react: "🎶",
     filename: __filename
@@ -178,17 +72,18 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
         setTimeout(() => activeCsongRequests.delete(msgId), 30000);
     }
 
+    const p = prefix || ".";
     const quoted = m.quoted ? m.quoted : null;
     const quotedMime = quoted ? ((quoted.msg || quoted).mimetype || "") : "";
     const isQuotedAudio = /audio|video/.test(quotedMime);
 
     if (!q && !isQuotedAudio) {
         return await reply(
-            `𝁟𝗟𝗲𝘃𝗶͢𝗮𝗻𝗼 𝗔𝘂𝗱𝗶𝗼𝘀🫟🐦‍🔥🎶\n\n` +
-            `Send stylish songs with audio waves directly to a WhatsApp Channel.\n\n` +
-            `*Format 1 (Search/URL):*\n${prefix || '.'}csong <Channel Link> , <Song Name or YT URL>\n\n` +
-            `*Format 2 (Reply Audio):*\nReply to audio message with ${prefix || '.'}csong <Channel Link>\n\n` +
-            `*Example:*\n${prefix || '.'}csong https://whatsapp.com/channel/0029VaXXXXXX , Faded`
+            `*CSONG COMMAND USAGE*\n\n` +
+            `Send songs as a voice note directly to a WhatsApp Channel.\n\n` +
+            `*Format 1 (Search/URL):* ${p}csong <Channel Link> , <Song Name or YT URL>\n` +
+            `*Format 2 (Reply Audio):* Reply to an audio/video message with ${p}csong <Channel Link>\n\n` +
+            `*Example:* ${p}csong https://whatsapp.com/channel/0029VaXXXXXX , Faded`
         );
     }
 
@@ -196,27 +91,30 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
     let songQuery = "";
 
     if (isQuotedAudio) {
-        channelInput = (q || "").trim().split(/[\s,|]+/)[0] || "";
+        channelInput = (q || "").trim();
         songQuery = "Quoted Audio";
+    } else if (q.includes(",") || q.includes("|")) {
+        const parts = q.split(/[,|]/);
+        channelInput = parts[0].trim();
+        songQuery = parts.slice(1).join(",").trim();
     } else {
-        // Accepts: "<link> , song", "<link>, song", "<link>,song", "<link> song"
-        const mm = q.trim().match(/^([^\s,|]+)\s*[,|]?\s*([\s\S]*)$/);
-        channelInput = mm ? mm[1].trim() : "";
-        songQuery = mm ? mm[2].trim() : "";
+        const parts = q.trim().split(/\s+/);
+        channelInput = parts[0].trim();
+        songQuery = parts.slice(1).join(" ").trim();
     }
 
     if (!channelInput || (!songQuery && !isQuotedAudio)) {
         return await reply(
             `Invalid format!\n\n` +
             `Please provide both Channel Link and Song Name (or reply to an audio message).\n` +
-            `*Example:* ${prefix || '.'}csong https://whatsapp.com/channel/0029VaXXXXXX , Faded`
+            `*Example:* ${p}csong https://whatsapp.com/channel/0029VaXXXXXX , Faded`
         );
     }
 
-    const tmpDir = path.join(process.cwd(), 'tmp');
+    const tmpDir = path.join(process.cwd(), "tmp");
     await fs.ensureDir(tmpDir);
 
-    const uniqueId = crypto.randomBytes(6).toString('hex');
+    const uniqueId = crypto.randomBytes(6).toString("hex");
     const inputPath = path.join(tmpDir, `csong_in_${uniqueId}.mp3`);
     const outputPath = path.join(tmpDir, `csong_vn_${uniqueId}.opus`);
 
@@ -233,146 +131,142 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
 
         if (isQuotedAudio) {
             await conn.sendMessage(from, { react: { text: "📥", key: mek.key } });
-            const mediaBuffer = await downloadQuotedMedia(quoted);
+            const mediaBuffer = await quoted.download();
             if (!mediaBuffer) throw new Error("Failed to download quoted media message.");
             await fs.writeFile(inputPath, mediaBuffer);
             title = quoted.filename || "Quoted Audio";
         } else {
-            const found = await searchYouTube(songQuery);
-            videoUrl = found.url;
-            title = found.title;
-            duration = found.duration;
-            author = found.author;
+            // --- Search / resolve (YT link handled directly, from new version) ---
+            const ytId = getYouTubeId(songQuery);
+            let searchItem = null;
+
+            if (ytId) {
+                videoUrl = `https://www.youtube.com/watch?v=${ytId}`;
+            }
+
+            try {
+                const { data: searchRes } = await axios.get(
+                    `https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(ytId ? videoUrl : songQuery)}`,
+                    { timeout: 8000 }
+                );
+                if (searchRes.results?.length) {
+                    searchItem = searchRes.results[0];
+                    if (!ytId) videoUrl = searchItem.url;
+                }
+            } catch (err) {
+                // fallback to yt-search
+                try {
+                    const searchRes = await yts(ytId ? { videoId: ytId } : songQuery);
+                    const v = ytId ? searchRes : searchRes.videos?.[0];
+                    if (v) {
+                        searchItem = {
+                            title: v.title,
+                            duration: v.timestamp,
+                            author: v.author?.name,
+                            url: v.url
+                        };
+                        if (!ytId) videoUrl = v.url;
+                    }
+                } catch (e2) { /* handled below */ }
+            }
+
+            if (!ytId && !searchItem) throw new Error("No search results found for: " + songQuery);
+            if (!videoUrl) throw new Error("Could not extract a valid YouTube video URL.");
+
+            title = searchItem?.title || "YouTube Audio";
+            duration = searchItem?.duration || "";
+            author = typeof searchItem?.author === "object" ? searchItem?.author?.name : (searchItem?.author || "");
 
             await conn.sendMessage(from, { react: { text: "📥", key: mek.key } });
 
-            const dl = await getAudioDownloadUrl(videoUrl);
-            if (dl.title && dl.title !== "YouTube Audio") title = dl.title;
+            // --- Download (primary + fallback API) ---
+            let downloadUrl;
+            try {
+                const { data: downloadRes } = await axios.get(
+                    `https://xenoytdl-2.vercel.app/api/youtube?url=${encodeURIComponent(videoUrl)}&format=mp3`,
+                    { timeout: 15000 }
+                );
+                downloadUrl = downloadRes?.download;
+                if (downloadRes?.title && downloadRes.title !== "YouTube Audio") title = downloadRes.title;
+            } catch (err) {
+                const { data: downloadRes } = await axios.get(
+                    `https://api.dreaded.site/api/ytdl/video?url=${encodeURIComponent(videoUrl)}`,
+                    { timeout: 15000 }
+                );
+                downloadUrl = downloadRes?.result?.download?.url || downloadRes?.download;
+            }
+
+            if (!downloadUrl) throw new Error("Failed to download song audio.");
 
             const response = await axios({
                 method: "get",
-                url: dl.url,
+                url: downloadUrl,
                 responseType: "stream",
-                timeout: 30000,
-                maxContentLength: 100 * 1024 * 1024
+                timeout: 30000
             });
-            const ctype = String(response.headers?.["content-type"] || "");
-            if (/text\/html|application\/json/i.test(ctype)) {
-                throw new Error("Download server returned an invalid (non-audio) response.");
-            }
             await pipeline(response.data, fs.createWriteStream(inputPath));
         }
 
-        const inStat = await fs.stat(inputPath).catch(() => null);
-        if (!inStat || inStat.size < 1024) throw new Error("Downloaded audio file is empty or invalid.");
-
         await conn.sendMessage(from, { react: { text: "🎙️", key: mek.key } });
 
-        const ffBin = ffmpegPath || "ffmpeg";
+        // --- Convert to Opus (execFile = no shell, so no command injection) ---
+        const safeTitle = (title || "Audio").replace(/["'$`\\]/g, "");
+        const safeArtist = (config.botName || "NICK MD").replace(/["'$`\\]/g, "");
+
         let voiceBuffer;
         let isOpusConverted = false;
 
         try {
-            await execFilePromise(ffBin, [
+            await execFilePromise(ffmpegPath || "ffmpeg", [
                 "-y", "-i", inputPath, "-vn",
-                "-c:a", "libopus", "-b:a", "48k", "-ar", "48000", "-ac", "1",
-                "-application", "voip", "-f", "ogg", outputPath
-            ], { timeout: 120000, maxBuffer: 10 * 1024 * 1024 });
-            const outStat = await fs.stat(outputPath).catch(() => null);
-            if (outStat && outStat.size > 0) {
+                "-c:a", "libopus", "-b:a", "48k", "-ac", "1", "-ar", "48000",
+                "-metadata", `title=${safeTitle}`,
+                "-metadata", `artist=${safeArtist}`,
+                outputPath
+            ]);
+            if (await fs.pathExists(outputPath)) {
                 voiceBuffer = await fs.readFile(outputPath);
                 isOpusConverted = true;
             }
         } catch (err) {
-            console.error("FFmpeg execution error:", err.message);
+            console.error("FFmpeg error:", err.message);
         }
 
-        if (!isOpusConverted) {
-            // Raw fallback: only valid as normal audio (PTT requires opus/ogg)
-            voiceBuffer = await fs.readFile(inputPath);
-        }
+        if (!isOpusConverted) voiceBuffer = await fs.readFile(inputPath);
 
-        let waveformData = createStylishWaveform(64); // fallback only
-        let voiceSeconds;
-        if (isOpusConverted) {
-            try {
-                const info = await getVoiceNoteInfo(ffBin, outputPath, 64);
-                waveformData = info.waveform;
-                voiceSeconds = info.seconds;
-            } catch (err) {
-                console.error("Waveform analysis failed, using generated waveform:", err.message);
-            }
-        }
-
-        const channelCaption =
-            `🎧 *${title || songQuery}*\n` +
-            (author ? `👤 *Artist:* ${author}\n` : ``) +
-            (duration ? `⏱️ *Duration:* ${duration}\n` : ``) +
-            `━━━━━━━•────────────────\n` +
-            `⇆   ◁   ❚❚   ▷   ↻\n` +
-            `✨ *𝁟𝗟𝗲𝘃𝗶͢𝗮𝗻𝗼 𝗔𝘂𝗱𝗶𝗼𝘀🫟🐦‍🔥🎶*`;
-
-        // Song is fully downloaded + converted at this point.
-        // Step 1: thumbnail + caption card (a voice note cannot carry a caption/thumbnail itself)
-        let thumbBuffer = null;
-        const thumbId = videoUrl ? getYouTubeId(videoUrl) : null;
-        if (thumbId) {
-            for (const name of ["maxresdefault", "hqdefault"]) {
-                try {
-                    const { data } = await axios.get(`https://i.ytimg.com/vi/${thumbId}/${name}.jpg`, {
-                        responseType: "arraybuffer",
-                        timeout: 10000
-                    });
-                    if (data && data.byteLength > 2000) {
-                        thumbBuffer = Buffer.from(data);
-                        break;
-                    }
-                } catch (err) {
-                    // maxresdefault does not exist for every video -> try next size
-                }
-            }
-        }
-
-        try {
-            if (thumbBuffer) {
-                await conn.sendMessage(channelJid, { image: thumbBuffer, caption: channelCaption });
-            } else {
-                await conn.sendMessage(channelJid, { text: channelCaption });
-            }
-        } catch (err) {
-            console.error("Channel thumbnail/caption send failed:", err.message);
-        }
-
-        // Step 2: the recorded voice note (ptt) with waveform
-        await conn.sendMessage(channelJid, {
+        // 1. Send voice note to the channel
+        const channelVoiceMsg = await conn.sendMessage(channelJid, {
             audio: voiceBuffer,
             mimetype: isOpusConverted ? "audio/ogg; codecs=opus" : "audio/mpeg",
             ptt: isOpusConverted,
-            ...(isOpusConverted ? { waveform: waveformData } : {}),
-            ...(isOpusConverted && voiceSeconds ? { seconds: voiceSeconds } : {})
+            ...(isOpusConverted ? { waveform: createStylishWaveform(64) } : {})
         });
 
+        // 2. Reply to that voice note in the channel with the song title only
+        if (channelVoiceMsg) {
+            await conn.sendMessage(channelJid, {
+                text: `🎵 *${title}*`
+            }, { quoted: channelVoiceMsg });
+        }
+
+        // 3. Confirmation in the current chat
         await conn.sendMessage(from, { react: { text: "✅", key: mek.key } });
 
         const chatDetailsText =
-            `✨ *𝁟𝗟𝗲𝘃𝗶͢𝗮𝗻𝗼 𝗔𝘂𝗱𝗶𝗼𝘀🫟🐦‍🔥🎶* ✨\n\n` +
-            `╭─────────────────────────┈💬\n` +
-            `│ 🎵 *Title:* ${title || songQuery}\n` +
-            (author ? `│ 👤 *Artist:* ${author}\n` : ``) +
-            (duration ? `│ ⏱️ *Duration:* ${duration}\n` : ``) +
-            (videoUrl ? `│ 🔗 *URL:* ${videoUrl}\n` : ``) +
-            `│ 📢 *Channel:* ${channelJid}\n` +
-            `│ 🎙️ *Waves:* Enabled (Voice Note)\n` +
-            `╰─────────────────────────┈💬\n\n` +
-            `━━━━━━━•────────────────\n` +
-            `⇆   ◁   ❚❚   ▷   ↻`;
+            `* *DONE FORWARDED*🎀* ✨\n\n` +
+            `*Title:* ${title || songQuery}\n` +
+            (author ? `*Artist:* ${author}\n` : ``) +
+            (duration ? `*Duration:* ${duration}\n` : ``) +
+            (videoUrl ? `*URL:* ${videoUrl}\n` : ``) +
+            `*Channel JID:* ${channelJid}\n` +
+            `*Format:* Voice Note`;
 
         await conn.sendMessage(from, { text: chatDetailsText }, { quoted: mek });
 
     } catch (e) {
         console.error("Csong Error:", e.message);
         await conn.sendMessage(from, { react: { text: "❌", key: mek.key } });
-        await reply("Error sending audio to channel: " + e.message);
+        await reply("Error: " + e.message);
     } finally {
         if (await fs.pathExists(inputPath)) await fs.remove(inputPath).catch(() => { });
         if (await fs.pathExists(outputPath)) await fs.remove(outputPath).catch(() => { });
