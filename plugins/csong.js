@@ -35,6 +35,37 @@ function createStylishWaveform(length = 64) {
     return Buffer.from(waveform);
 }
 
+/**
+ * Decodes the converted voice note and returns the real duration (seconds)
+ * and a 64-bar waveform built from the actual loudness of the audio,
+ * so WhatsApp shows it exactly like a natively recorded voice message.
+ */
+async function getVoiceNoteInfo(ffBin, filePath, bars = 64) {
+    const RATE = 8000;
+    const { stdout } = await execFilePromise(ffBin, [
+        "-v", "error", "-i", filePath, "-vn", "-ac", "1", "-ar", String(RATE), "-f", "s16le", "-"
+    ], { encoding: "buffer", maxBuffer: 128 * 1024 * 1024, timeout: 120000 });
+
+    const total = Math.floor(stdout.length / 2);
+    if (total < bars) throw new Error("Audio too short to analyse");
+
+    const seconds = Math.max(1, Math.round(total / RATE));
+    const per = Math.floor(total / bars);
+    const rms = new Array(bars).fill(0);
+    for (let b = 0; b < bars; b++) {
+        let sum = 0;
+        for (let i = b * per; i < (b + 1) * per; i++) {
+            const v = stdout.readInt16LE(i * 2) / 32768;
+            sum += v * v;
+        }
+        rms[b] = Math.sqrt(sum / per);
+    }
+    const max = Math.max(...rms) || 1;
+    // sqrt-compress so quiet parts are still visible, scale to WhatsApp's 0-100 range
+    const waveform = Uint8Array.from(rms.map(v => Math.min(100, Math.max(4, Math.round(Math.sqrt(v / max) * 100)))));
+    return { seconds, waveform };
+}
+
 async function resolveChannelJid(conn, input) {
     if (!input) return null;
     let cleanInput = input.trim();
@@ -261,7 +292,17 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             voiceBuffer = await fs.readFile(inputPath);
         }
 
-        const waveformData = createStylishWaveform(64);
+        let waveformData = createStylishWaveform(64); // fallback only
+        let voiceSeconds;
+        if (isOpusConverted) {
+            try {
+                const info = await getVoiceNoteInfo(ffBin, outputPath, 64);
+                waveformData = info.waveform;
+                voiceSeconds = info.seconds;
+            } catch (err) {
+                console.error("Waveform analysis failed, using generated waveform:", err.message);
+            }
+        }
 
         const channelCaption =
             `🎧 *${title || songQuery}*\n` +
@@ -307,7 +348,8 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             audio: voiceBuffer,
             mimetype: isOpusConverted ? "audio/ogg; codecs=opus" : "audio/mpeg",
             ptt: isOpusConverted,
-            ...(isOpusConverted ? { waveform: waveformData } : {})
+            ...(isOpusConverted ? { waveform: waveformData } : {}),
+            ...(isOpusConverted && voiceSeconds ? { seconds: voiceSeconds } : {})
         });
 
         await conn.sendMessage(from, { react: { text: "✅", key: mek.key } });
