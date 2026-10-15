@@ -263,29 +263,52 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
 
         const waveformData = createStylishWaveform(64);
 
-        // Send Voice Note to WhatsApp Channel (Newsletter)
-        const channelVoiceMsg = await conn.sendMessage(channelJid, {
+        const channelCaption =
+            `🎧 *${title || songQuery}*\n` +
+            (author ? `👤 *Artist:* ${author}\n` : ``) +
+            (duration ? `⏱️ *Duration:* ${duration}\n` : ``) +
+            `━━━━━━━•────────────────\n` +
+            `⇆   ◁   ❚❚   ▷   ↻\n` +
+            `✨ *𝁟𝗟𝗲𝘃𝗶͢𝗮𝗻𝗼 𝗔𝘂𝗱𝗶𝗼𝘀🫟🐦‍🔥🎶*`;
+
+        // Song is fully downloaded + converted at this point.
+        // Step 1: thumbnail + caption card (a voice note cannot carry a caption/thumbnail itself)
+        let thumbBuffer = null;
+        const thumbId = videoUrl ? getYouTubeId(videoUrl) : null;
+        if (thumbId) {
+            for (const name of ["maxresdefault", "hqdefault"]) {
+                try {
+                    const { data } = await axios.get(`https://i.ytimg.com/vi/${thumbId}/${name}.jpg`, {
+                        responseType: "arraybuffer",
+                        timeout: 10000
+                    });
+                    if (data && data.byteLength > 2000) {
+                        thumbBuffer = Buffer.from(data);
+                        break;
+                    }
+                } catch (err) {
+                    // maxresdefault does not exist for every video -> try next size
+                }
+            }
+        }
+
+        try {
+            if (thumbBuffer) {
+                await conn.sendMessage(channelJid, { image: thumbBuffer, caption: channelCaption });
+            } else {
+                await conn.sendMessage(channelJid, { text: channelCaption });
+            }
+        } catch (err) {
+            console.error("Channel thumbnail/caption send failed:", err.message);
+        }
+
+        // Step 2: the recorded voice note (ptt) with waveform
+        await conn.sendMessage(channelJid, {
             audio: voiceBuffer,
             mimetype: isOpusConverted ? "audio/ogg; codecs=opus" : "audio/mpeg",
             ptt: isOpusConverted,
             ...(isOpusConverted ? { waveform: waveformData } : {})
         });
-
-        // Follow-up caption card (non-fatal: audio is already delivered)
-        if (channelVoiceMsg) {
-            try {
-                const channelCaption =
-                    `🎧 *${title}*\n` +
-                    (author ? `👤 *Artist:* ${author}\n` : ``) +
-                    (duration ? `⏱️ *Duration:* ${duration}\n` : ``) +
-                    `━━━━━━━•────────────────\n` +
-                    `⇆   ◁   ❚❚   ▷   ↻\n` +
-                    `✨ *𝁟𝗟𝗲𝘃𝗶͢𝗮𝗻𝗼 𝗔𝘂𝗱𝗶𝗼𝘀🫟🐦‍🔥🎶*`;
-                await conn.sendMessage(channelJid, { text: channelCaption.trim() });
-            } catch (err) {
-                console.error("Channel caption send failed:", err.message);
-            }
-        }
 
         await conn.sendMessage(from, { react: { text: "✅", key: mek.key } });
 
