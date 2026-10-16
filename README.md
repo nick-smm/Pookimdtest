@@ -1,2 +1,0 @@
-# Pookimdtest
-Odikoo pudds
