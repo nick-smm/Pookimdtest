@@ -17,6 +17,7 @@ cmd({
 		q,
 		isGroup,
 		sender,
+            senderNumber,
 		pushname,
 		isMe,
 		isOwner,
