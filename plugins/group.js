@@ -391,3 +391,91 @@ async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
         reply(`Error: ${e.message || e}`);
     }
 });
+
+// ------------------- ANTILINK -------------------
+const antilinkDbPath = path.join(dbDir, 'antilink.json');
+
+function getAntilinkDb() {
+    try {
+        if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+        if (!fs.existsSync(antilinkDbPath)) fs.writeFileSync(antilinkDbPath, '{}');
+        return JSON.parse(fs.readFileSync(antilinkDbPath, 'utf-8'));
+    } catch {
+        return {};
+    }
+}
+
+function saveAntilinkDb(data) {
+    try {
+        if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+        fs.writeFileSync(antilinkDbPath, JSON.stringify(data, null, 2));
+    } catch (e) {
+        console.error("Save antilink DB error:", e);
+    }
+}
+
+const linkRegex = /(https?:\/\/\S+|www\.\S+|chat\.whatsapp\.com\/\S+|wa\.me\/\S+|t\.me\/\S+)/i;
+
+cmd({
+    pattern: "antilink",
+    desc: "Turn antilink on/off for this group.",
+    category: "group",
+    react: "🚫",
+    filename: __filename
+},
+async (conn, mek, m, { from, q, isGroup, isBotAdmins, isAdmins, isOwner, reply }) => {
+    try {
+        if (!isGroup) return await reply("This command can only be used in groups.");
+        if (!isBotAdmins) return await reply("I need to be an Admin to delete messages.");
+        if (!isAdmins && !isOwner) return await reply("Only group Admins can use this command.");
+
+        const arg = (q || "").trim().toLowerCase();
+        const db = getAntilinkDb();
+
+        if (arg === "on") {
+            db[from] = true;
+            saveAntilinkDb(db);
+            return await reply("✅ Antilink is now *ON*. Links sent by members will be deleted.");
+        } else if (arg === "off") {
+            delete db[from];
+            saveAntilinkDb(db);
+            return await reply("❌ Antilink is now *OFF*.");
+        }
+        await reply(`Usage: .antilink on / .antilink off\nCurrent status: *${db[from] ? "ON" : "OFF"}*`);
+    } catch (e) {
+        console.error("Antilink Error:", e);
+        reply(`Error: ${e.message || e}`);
+    }
+});
+
+// Auto delete links when antilink is ON
+cmd({
+    on: "body"
+},
+async (conn, mek, m, { from, body, isGroup, isBotAdmins, isAdmins, isOwner, sender }) => {
+    try {
+        if (!isGroup) return;
+        if (mek.key?.fromMe) return;
+
+        const db = getAntilinkDb();
+        if (!db[from]) return;
+        if (!isBotAdmins) return;
+        if (isAdmins || isOwner) return; // admins & owner are allowed to send links
+
+        const text = body || m.body || "";
+        if (!linkRegex.test(text)) return;
+
+        const user = sender || m.sender;
+
+        // delete the message
+        await conn.sendMessage(from, { delete: mek.key });
+
+        // warn the user with mention
+        await conn.sendMessage(from, {
+            text: `⚠️ *WARNING* ⚠️\n\n@${user.split('@')[0]}, sending links is not allowed in this group!\nYour message has been deleted.`,
+            mentions: [user]
+        });
+    } catch (e) {
+        console.error("Antilink Listener Error:", e);
+    }
+});
