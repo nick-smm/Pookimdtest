@@ -6,8 +6,9 @@ let baileys;
 try { baileys = require('@whiskeysockets/baileys'); }
 catch { baileys = require('baileys'); }
 const { downloadContentFromMessage, jidNormalizedUser } = baileys;
+const S_WHATSAPP_NET = baileys.S_WHATSAPP_NET || '@s.whatsapp.net';
 
-// Jimp is optional. It is only used as a fallback if the original upload is rejected.
+// Jimp is optional. Only used as a fallback if the original upload is rejected.
 let Jimp = null;
 let isV1 = false;
 try {
@@ -46,13 +47,15 @@ async function downloadImage(imageMessage) {
 }
 
 // Upload the image exactly as it is: no crop, no resize, no padding.
-// (Baileys' updateProfilePicture is NOT used because it crops to 640x640.)
+// FIX: the iq must be sent "to" s.whatsapp.net with "target" = own jid.
+// (Before it was "to: jid", so WhatsApp ignored it and the DP never changed.)
 async function uploadOriginal(conn, buffer) {
     const jid = jidNormalizedUser(conn.user.id);
     await conn.query({
         tag: 'iq',
         attrs: {
-            to: jid,
+            target: jid,
+            to: S_WHATSAPP_NET,
             type: 'set',
             xmlns: 'w:profile:picture'
         },
@@ -98,7 +101,7 @@ async (conn, mek, m, { from, reply, isOwner }) => {
 
         const imageMessage = getImageMessage(mek);
         if (!imageMessage) {
-            return reply("📸 Reply to a photo with *.pp*, or send a photo with *.pp* as the caption.");
+            return reply("📸 Reply to a photo with *.fullpp*, or send a photo with *.fullpp* as the caption.");
         }
 
         const original = await downloadImage(imageMessage);
