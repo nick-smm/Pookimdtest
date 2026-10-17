@@ -8,7 +8,7 @@ catch { baileys = require('baileys'); }
 const { downloadContentFromMessage, jidNormalizedUser } = baileys;
 const S_WHATSAPP_NET = baileys.S_WHATSAPP_NET || '@s.whatsapp.net';
 
-// Jimp is optional. Only used as a fallback if the original upload is rejected.
+// Jimp: used for the fallback and for the .sqpp test command
 let Jimp = null;
 let isV1 = false;
 try {
@@ -47,8 +47,6 @@ async function downloadImage(imageMessage) {
 }
 
 // Upload the image exactly as it is: no crop, no resize, no padding.
-// FIX: the iq must be sent "to" s.whatsapp.net with "target" = own jid.
-// (Before it was "to: jid", so WhatsApp ignored it and the DP never changed.)
 async function uploadOriginal(conn, buffer) {
     const jid = jidNormalizedUser(conn.user.id);
     const res = await conn.query({
@@ -89,15 +87,42 @@ async function downscaleKeepRatio(buffer, max = 1280) {
         : await img.getBufferAsync(Jimp.MIME_JPEG);
 }
 
-cmd({
-    pattern: "pp",
-    alias: ["setpp", "setdp", "fullpp"],
-    desc: "Set the bot's profile picture exactly as sent (Owner only).",
-    category: "owner",
-    react: "🖼️",
-    filename: __filename
-},
-async (conn, mek, m, { from, reply, isOwner }) => {
+// TEST ONLY (.sqpp): whole photo inside a square, blurred background.
+async function makeFullSquare(buffer, size = 720) {
+    if (!Jimp) throw new Error("'jimp' is not installed. Run: npm i jimp");
+    const fg = await Jimp.read(buffer);
+    const bg = await Jimp.read(buffer);
+    const w = fg.bitmap.width;
+    const h = fg.bitmap.height;
+    const scale = size / Math.max(w, h);
+    const nw = Math.max(1, Math.round(w * scale));
+    const nh = Math.max(1, Math.round(h * scale));
+    const x = Math.round((size - nw) / 2);
+    const y = Math.round((size - nh) / 2);
+    if (isV1) {
+        bg.cover({ w: size, h: size });
+        bg.blur(25);
+        fg.resize({ w: nw, h: nh });
+        bg.composite(fg, x, y);
+        return await bg.getBuffer('image/jpeg', { quality: 95 });
+    }
+    bg.cover(size, size);
+    bg.blur(25);
+    fg.resize(nw, nh);
+    bg.composite(fg, x, y);
+    bg.quality(95);
+    return await bg.getBufferAsync(Jimp.MIME_JPEG);
+}
+
+function summarize(res) {
+    try {
+        if (!res) return 'no response';
+        const attrs = res.attrs ? JSON.stringify(res.attrs) : '';
+        return `${res.tag || 'node'} ${attrs}`.slice(0, 300);
+    } catch { return 'unreadable'; }
+}
+
+async function handle(conn, mek, { from, reply, isOwner }, square) {
     try {
         if (!isOwner) return reply("❌ This command can only be used by the owner.");
 
@@ -106,33 +131,51 @@ async (conn, mek, m, { from, reply, isOwner }) => {
             return reply("📸 Reply to a photo with *.fullpp*, or send a photo with *.fullpp* as the caption.");
         }
 
-        const original = await downloadImage(imageMessage);
+        let toUpload = await downloadImage(imageMessage);
+        const origBytes = toUpload.length;
+        if (square) toUpload = await makeFullSquare(toUpload, 720);
 
+        let upRes;
+        let note = '';
         try {
-            // 1) Upload the original image untouched
-            await uploadOriginal(conn, original);
+            upRes = await uploadOriginal(conn, toUpload);
         } catch (e) {
-            // 2) Fallback: same aspect ratio, only smaller in size
-            console.error("Original upload failed, trying fallback:", e.message);
-            const smaller = await downscaleKeepRatio(original);
-            await uploadOriginal(conn, smaller);
+            console.error("Upload failed, trying fallback:", e.message);
+            note = `First upload error: ${e.message || e}\n`;
+            const smaller = await downscaleKeepRatio(toUpload);
+            upRes = await uploadOriginal(conn, smaller);
         }
 
         // Verify: fetch the DP that WhatsApp really has now
         await new Promise(r => setTimeout(r, 3000));
         const myJid = jidNormalizedUser(conn.user.id);
         let url = null;
-        try { url = await conn.profilePictureUrl(myJid, 'image'); } catch (e) {
-            console.error("Could not read back DP:", e.message);
+        let readErr = '';
+        for (const type of ['image', 'preview']) {
+            try {
+                url = await conn.profilePictureUrl(myJid, type);
+                if (url) break;
+            } catch (e) {
+                readErr += `${type}: ${e.message || e}\n`;
+                console.error("Could not read back DP:", type, e.message);
+            }
         }
+
+        const report =
+            `Mode: ${square ? 'square (test)' : 'original'}\n` +
+            `Photo: ${origBytes} bytes\n` +
+            `Sent: ${toUpload.length} bytes\n` +
+            note +
+            `Server reply: ${summarize(upRes)}`;
+
         if (url) {
             await conn.sendMessage(from, {
                 image: { url },
-                caption: `Upload sent: ${original.length} bytes.\nThis is the DP WhatsApp has now (check if it changed).`
+                caption: `${report}\n\nThis is the DP WhatsApp has now.`
             }, { quoted: mek });
         } else {
             await conn.sendMessage(from, {
-                text: "⚠️ Upload went through but I could not read the DP back. Check console log."
+                text: `⚠️ Could not read the DP back.\n${report}\nRead error:\n${readErr || 'none'}`
             }, { quoted: mek });
         }
 
@@ -140,4 +183,23 @@ async (conn, mek, m, { from, reply, isOwner }) => {
         console.error("PP Error:", e);
         reply(`Error: ${e.message || e}`);
     }
-});
+}
+
+cmd({
+    pattern: "pp",
+    alias: ["setpp", "setdp", "fullpp"],
+    desc: "Set the bot's profile picture exactly as sent (Owner only).",
+    category: "owner",
+    react: "🖼️",
+    filename: __filename
+},
+async (conn, mek, m, ctx) => handle(conn, mek, ctx, false));
+
+cmd({
+    pattern: "sqpp",
+    desc: "TEST: set DP with the whole photo inside a square (Owner only).",
+    category: "owner",
+    react: "🖼️",
+    filename: __filename
+},
+async (conn, mek, m, ctx) => handle(conn, mek, ctx, true));
