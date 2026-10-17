@@ -414,6 +414,28 @@ function saveAntilinkDb(data) {
     }
 }
 
+// Reliable admin check (works with both @s.whatsapp.net and @lid ids)
+const normJid = (j) => (j || '').split(':')[0].split('@')[0];
+
+async function getAdminInfo(conn, from, sender) {
+    try {
+        const meta = await conn.groupMetadata(from);
+        const adminIds = new Set();
+        for (const p of meta.participants || []) {
+            if (!p.admin) continue;
+            [p.id, p.jid, p.lid, p.phoneNumber].forEach(x => x && adminIds.add(normJid(x)));
+        }
+        const botIds = [conn.user?.id, conn.user?.lid, conn.user?.jid].filter(Boolean).map(normJid);
+        return {
+            botIsAdmin: botIds.some(id => adminIds.has(id)),
+            senderIsAdmin: adminIds.has(normJid(sender))
+        };
+    } catch (e) {
+        console.error("getAdminInfo error:", e);
+        return { botIsAdmin: false, senderIsAdmin: false };
+    }
+}
+
 const linkRegex = /(https?:\/\/\S+|www\.\S+|chat\.whatsapp\.com\/\S+|wa\.me\/\S+|t\.me\/\S+)/i;
 
 cmd({
@@ -426,7 +448,7 @@ cmd({
 async (conn, mek, m, { from, q, isGroup, isBotAdmins, isAdmins, isOwner, reply }) => {
     try {
         if (!isGroup) return await reply("This command can only be used in groups.");
-        if (!isBotAdmins) return await reply("I need to be an Admin to delete messages.");
+        if (!isBotAdmins && !(await getAdminInfo(conn, from, m.sender)).botIsAdmin) return await reply("I need to be an Admin to delete messages.");
         if (!isAdmins && !isOwner) return await reply("Only group Admins can use this command.");
 
         const arg = (q || "").trim().toLowerCase();
@@ -460,7 +482,7 @@ cmd({
 async (conn, mek, m, { from, isGroup, isBotAdmins, isAdmins, isOwner, reply }) => {
     try {
         if (!isGroup) return await reply("This command can only be used in groups.");
-        if (!isBotAdmins) return await reply("I need to be an Admin to delete messages.");
+        if (!isBotAdmins && !(await getAdminInfo(conn, from, m.sender)).botIsAdmin) return await reply("I need to be an Admin to delete messages.");
         if (!isAdmins && !isOwner) return await reply("Only group Admins can use this command.");
 
         const db = getAntilinkDb();
@@ -506,13 +528,14 @@ async (conn, mek, m, { from, body, isGroup, isBotAdmins, isAdmins, isOwner, send
 
         const db = getAntilinkDb();
         if (!db[from]) return;
-        if (!isBotAdmins) return;
-        if (isAdmins || isOwner) return; // admins & owner are allowed to send links
-
         const text = body || m.body || "";
         if (!linkRegex.test(text)) return;
 
         const user = sender || m.sender;
+
+        const info = await getAdminInfo(conn, from, user);
+        if (!isBotAdmins && !info.botIsAdmin) return;
+        if (isAdmins || isOwner || info.senderIsAdmin) return; // admins & owner are allowed to send links
 
         // delete the message
         await conn.sendMessage(from, { delete: mek.key });
