@@ -1,20 +1,22 @@
 const config = require('../config');
 const { cmd } = require('../command');
 
-// Baileys package name project anusarichu maarum, randum try cheyyum
+// Try both common Baileys package names
 let baileys;
 try { baileys = require('@whiskeysockets/baileys'); }
 catch { baileys = require('baileys'); }
 const { downloadContentFromMessage, jidNormalizedUser } = baileys;
 
-// Jimp optional aanu (illengil original photo thanne upload cheyyum)
-let JimpLib = null;
+// Jimp is optional. It is only used as a fallback if the original upload is rejected.
+let Jimp = null;
+let isV1 = false;
 try {
     const j = require('jimp');
-    JimpLib = j.Jimp || j;
+    isV1 = !!j.Jimp;
+    Jimp = j.Jimp || j;
 } catch {}
 
-// Replied / sent image-nte raw message edukkum
+// Get the image from the replied message or from the message itself
 function getImageMessage(mek) {
     const msg = mek.message || {};
     if (msg.imageMessage) return msg.imageMessage;
@@ -43,40 +45,9 @@ async function downloadImage(imageMessage) {
     return buffer;
 }
 
-// Crop illathe, full photo (aspect ratio maattathe) - max 1080px side
-async function prepareFullImage(buffer) {
-    if (!JimpLib) return buffer;
-    try {
-        const img = await JimpLib.read(buffer);
-        const w = img.bitmap.width;
-        const h = img.bitmap.height;
-        const max = 1080;
-        if (Math.max(w, h) > max) {
-            if (w >= h) img.resize({ w: max });      // jimp v1
-            else img.resize({ h: max });
-        }
-        return await img.getBuffer('image/jpeg');    // jimp v1
-    } catch (e1) {
-        try {
-            const img = await JimpLib.read(buffer);  // jimp v0.x
-            const w = img.bitmap.width;
-            const h = img.bitmap.height;
-            const max = 1080;
-            if (Math.max(w, h) > max) {
-                if (w >= h) img.resize(max, JimpLib.AUTO);
-                else img.resize(JimpLib.AUTO, max);
-            }
-            return await img.getBufferAsync('image/jpeg');
-        } catch (e2) {
-            console.error("Jimp resize failed, using original:", e2.message);
-            return buffer;
-        }
-    }
-}
-
-// Baileys-nte updateProfilePicture 640x640-il crop cheyyum,
-// athu ozhivaakkan direct query ayakkunnu
-async function setFullProfilePicture(conn, buffer) {
+// Upload the image exactly as it is: no crop, no resize, no padding.
+// (Baileys' updateProfilePicture is NOT used because it crops to 640x640.)
+async function uploadOriginal(conn, buffer) {
     const jid = jidNormalizedUser(conn.user.id);
     await conn.query({
         tag: 'iq',
@@ -95,31 +66,55 @@ async function setFullProfilePicture(conn, buffer) {
     });
 }
 
+// Fallback only: shrink very large photos but keep the same aspect ratio
+async function downscaleKeepRatio(buffer, max = 1280) {
+    if (!Jimp) throw new Error("Upload rejected and 'jimp' is not installed for the fallback.");
+    const img = await Jimp.read(buffer);
+    const w = img.bitmap.width;
+    const h = img.bitmap.height;
+    if (Math.max(w, h) > max) {
+        if (isV1) {
+            w >= h ? img.resize({ w: max }) : img.resize({ h: max });
+        } else {
+            w >= h ? img.resize(max, Jimp.AUTO) : img.resize(Jimp.AUTO, max);
+        }
+    }
+    return isV1
+        ? await img.getBuffer('image/jpeg', { quality: 95 })
+        : await img.getBufferAsync(Jimp.MIME_JPEG);
+}
+
 cmd({
     pattern: "pp",
     alias: ["setpp", "setdp", "fullpp"],
-    desc: "Set bot's profile picture in full size (Owner only).",
+    desc: "Set the bot's profile picture exactly as sent (Owner only).",
     category: "owner",
     react: "🖼️",
     filename: __filename
 },
 async (conn, mek, m, { from, reply, isOwner }) => {
     try {
-        // Owner mathram
-        if (!isOwner) return reply("❌ Ee command owner-inu mathram use cheyyam.");
+        if (!isOwner) return reply("❌ This command can only be used by the owner.");
 
         const imageMessage = getImageMessage(mek);
         if (!imageMessage) {
-            return reply("📸 Oru photo-ye reply cheythu *.pp* ennu ayakkuka (allenkil photo-yude caption-il *.pp* iduka).");
+            return reply("📸 Reply to a photo with *.pp*, or send a photo with *.pp* as the caption.");
         }
 
         const original = await downloadImage(imageMessage);
-        const finalImage = await prepareFullImage(original);
 
-        await setFullProfilePicture(conn, finalImage);
+        try {
+            // 1) Upload the original image untouched
+            await uploadOriginal(conn, original);
+        } catch (e) {
+            // 2) Fallback: same aspect ratio, only smaller in size
+            console.error("Original upload failed, trying fallback:", e.message);
+            const smaller = await downscaleKeepRatio(original);
+            await uploadOriginal(conn, smaller);
+        }
 
         await conn.sendMessage(from, {
-            text: "✅ Profile picture full size-il update cheythu."
+            text: "✅ Profile picture updated exactly as sent."
         }, { quoted: mek });
 
     } catch (e) {
