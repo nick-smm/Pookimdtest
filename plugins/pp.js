@@ -51,7 +51,7 @@ async function downloadImage(imageMessage) {
 // (Before it was "to: jid", so WhatsApp ignored it and the DP never changed.)
 async function uploadOriginal(conn, buffer) {
     const jid = jidNormalizedUser(conn.user.id);
-    await conn.query({
+    const res = await conn.query({
         tag: 'iq',
         attrs: {
             target: jid,
@@ -67,6 +67,8 @@ async function uploadOriginal(conn, buffer) {
             }
         ]
     });
+    console.log("PP upload response:", JSON.stringify(res)?.slice(0, 500));
+    return res;
 }
 
 // Fallback only: shrink very large photos but keep the same aspect ratio
@@ -116,9 +118,23 @@ async (conn, mek, m, { from, reply, isOwner }) => {
             await uploadOriginal(conn, smaller);
         }
 
-        await conn.sendMessage(from, {
-            text: "✅ Profile picture updated exactly as sent."
-        }, { quoted: mek });
+        // Verify: fetch the DP that WhatsApp really has now
+        await new Promise(r => setTimeout(r, 3000));
+        const myJid = jidNormalizedUser(conn.user.id);
+        let url = null;
+        try { url = await conn.profilePictureUrl(myJid, 'image'); } catch (e) {
+            console.error("Could not read back DP:", e.message);
+        }
+        if (url) {
+            await conn.sendMessage(from, {
+                image: { url },
+                caption: `Upload sent: ${original.length} bytes.\nThis is the DP WhatsApp has now (check if it changed).`
+            }, { quoted: mek });
+        } else {
+            await conn.sendMessage(from, {
+                text: "⚠️ Upload went through but I could not read the DP back. Check console log."
+            }, { quoted: mek });
+        }
 
     } catch (e) {
         console.error("PP Error:", e);
