@@ -432,18 +432,65 @@ async (conn, mek, m, { from, q, isGroup, isBotAdmins, isAdmins, isOwner, reply }
         const arg = (q || "").trim().toLowerCase();
         const db = getAntilinkDb();
 
-        if (arg === "on") {
+        // .antilink (no argument) = toggle ON <-> OFF
+        if (arg === "on" || (arg === "" && !db[from])) {
             db[from] = true;
             saveAntilinkDb(db);
             return await reply("✅ Antilink is now *ON*. Links sent by members will be deleted.");
-        } else if (arg === "off") {
+        } else if (arg === "off" || (arg === "" && db[from])) {
             delete db[from];
             saveAntilinkDb(db);
             return await reply("❌ Antilink is now *OFF*.");
         }
-        await reply(`Usage: .antilink on / .antilink off\nCurrent status: *${db[from] ? "ON" : "OFF"}*`);
+        await reply(`Usage:\n.antilink on\n.antilink off\n.antilink (toggle)\nCurrent status: *${db[from] ? "ON" : "OFF"}*`);
     } catch (e) {
         console.error("Antilink Error:", e);
+        reply(`Error: ${e.message || e}`);
+    }
+});
+
+// Separate shortcut commands: .antilinkon / .antilinkoff
+cmd({
+    pattern: "antilinkon",
+    desc: "Turn antilink ON for this group.",
+    category: "group",
+    react: "✅",
+    filename: __filename
+},
+async (conn, mek, m, { from, isGroup, isBotAdmins, isAdmins, isOwner, reply }) => {
+    try {
+        if (!isGroup) return await reply("This command can only be used in groups.");
+        if (!isBotAdmins) return await reply("I need to be an Admin to delete messages.");
+        if (!isAdmins && !isOwner) return await reply("Only group Admins can use this command.");
+
+        const db = getAntilinkDb();
+        db[from] = true;
+        saveAntilinkDb(db);
+        await reply("✅ Antilink is now *ON*. Links sent by members will be deleted.");
+    } catch (e) {
+        console.error("Antilinkon Error:", e);
+        reply(`Error: ${e.message || e}`);
+    }
+});
+
+cmd({
+    pattern: "antilinkoff",
+    desc: "Turn antilink OFF for this group.",
+    category: "group",
+    react: "❌",
+    filename: __filename
+},
+async (conn, mek, m, { from, isGroup, isAdmins, isOwner, reply }) => {
+    try {
+        if (!isGroup) return await reply("This command can only be used in groups.");
+        if (!isAdmins && !isOwner) return await reply("Only group Admins can use this command.");
+
+        const db = getAntilinkDb();
+        delete db[from];
+        saveAntilinkDb(db);
+        await reply("❌ Antilink is now *OFF*.");
+    } catch (e) {
+        console.error("Antilinkoff Error:", e);
         reply(`Error: ${e.message || e}`);
     }
 });
