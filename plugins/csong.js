@@ -1,4 +1,4 @@
-// CSONG - Send a song as a voice note to a WhatsApp Channel
+// CSONG - Send a song as a voice note/audio to a WhatsApp Channel
 // Ported from NOVA-XD (newbotoct11) to the NICK MINI BOT `cmd()` plugin system.
 // Dev Xeno Exe
 
@@ -154,7 +154,7 @@ const activeCsongRequests = new Set();
 cmd({
     pattern: "csong",
     alias: ["channelsong", "songchannel"],
-    desc: "Send a song as a voice note directly to a WhatsApp Channel",
+    desc: "Send a song as audio directly to a WhatsApp Channel",
     category: "download",
     filename: __filename
 },
@@ -176,7 +176,7 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
     if (!text && !isQuotedAudio) {
         return await reply(
             `*CSONG COMMAND USAGE*\n\n` +
-            `Send songs as a voice note directly to a WhatsApp Channel.\n\n` +
+            `Send songs directly to a WhatsApp Channel.\n\n` +
             `*Format 1 (Search/URL):* ${p}csong <Channel Link> , <Song Name or YT URL>\n` +
             `*Format 2 (Reply Audio):* Reply to an audio/video message with ${p}csong <Channel Link>\n\n` +
             `*Example:* ${p}csong https://whatsapp.com/channel/0029VaXXXXXX , Faded`
@@ -296,27 +296,38 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             }
         }
 
-        if (!voiceBuffer) throw new Error("Voice note conversion failed (ffmpeg error).");
+        if (!voiceBuffer) throw new Error("Audio conversion failed (ffmpeg error).");
         if (!seconds || seconds < 1) seconds = Math.max(1, Math.round(voiceBuffer.length / 6000));
 
         try {
             if (typeof conn.newsletterMetadata === "function") await conn.newsletterMetadata("jid", channelJid);
         } catch (err) { /* metadata check is optional */ }
 
-        try {
-            await conn.presenceSubscribe(channelJid).catch(() => { });
-            await conn.sendPresenceUpdate("recording", channelJid);
-            await new Promise(r => setTimeout(r, Math.min(Math.max(seconds, 2), 6) * 1000));
-        } catch (err) { /* presence is cosmetic */ }
+        // Check if target is a WhatsApp Channel (Newsletter)
+        const isNewsletter = channelJid.endsWith("@newsletter");
 
+        if (!isNewsletter) {
+            try {
+                await conn.presenceSubscribe(channelJid).catch(() => { });
+                await conn.sendPresenceUpdate("recording", channelJid);
+                await new Promise(r => setTimeout(r, Math.min(Math.max(seconds, 2), 6) * 1000));
+            } catch (err) { /* presence is cosmetic */ }
+        }
+
+        // Send audio: Newsletters require standard audio formatting (ptt: false), chats use voice note format (ptt: true)
         const channelVoiceMsg = await conn.sendMessage(channelJid, {
             audio: voiceBuffer,
-            mimetype: "audio/ogg; codecs=opus",
-            ptt: true,
-            seconds
+            mimetype: isNewsletter ? "audio/mp4" : "audio/ogg; codecs=opus",
+            ptt: isNewsletter ? false : true,
+            seconds,
+            fileName: `${safeTitle}.mp3`
         });
-        await conn.sendPresenceUpdate("paused", channelJid).catch(() => { });
-        if (!channelVoiceMsg) throw new Error("Voice note was not accepted by the channel.");
+
+        if (!isNewsletter) {
+            await conn.sendPresenceUpdate("paused", channelJid).catch(() => { });
+        }
+
+        if (!channelVoiceMsg) throw new Error("Audio was not accepted by the channel.");
 
         await new Promise(r => setTimeout(r, 1000));
         const channelCaption = `🎵 *${title}*`;
@@ -336,7 +347,7 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             (duration ? `*Duration:* ${duration}\n` : ``) +
             (videoUrl ? `*URL:* ${videoUrl}\n` : ``) +
             `*Channel JID:* ${channelJid}\n` +
-            `*Format:* Voice Note (recorded)`;
+            `*Format:* ${isNewsletter ? "Standard Audio Track" : "Voice Note (recorded)"}`;
 
         await conn.sendMessage(from, { text: chatDetailsText }, { quoted: mek });
 
