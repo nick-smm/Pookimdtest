@@ -1,6 +1,5 @@
-// CSONG - Send a song as audio to a WhatsApp Channel or Voice Note to Chats
-// Ported from NOVA-XD (newbotoct11) to the NICK MINI BOT `cmd()` plugin system.
-// Dev Xeno Exe
+// CSONG - Send a song as audio/voice note to a WhatsApp Channel or Chat
+// Ported to NICK MINI BOT / Pookimdtest plugin system.
 
 const axios = require("axios");
 const { execFile } = require("child_process");
@@ -40,12 +39,11 @@ async function getFfmpeg() {
             return bin;
         } catch (e) { /* try next candidate */ }
     }
-    return null;
+    throw new Error("FFmpeg is required for audio conversion but could not be found.");
 }
 
 async function runFfmpeg(args) {
     const bin = await getFfmpeg();
-    if (!bin) throw new Error("ffmpeg not found");
     const { stderr } = await execFilePromise(bin, args, { maxBuffer: 1024 * 1024 * 20, timeout: 120000 });
     return stderr || "";
 }
@@ -88,7 +86,6 @@ async function resolveChannelJid(conn, input) {
 async function downloadQuotedMedia(quoted) {
     const msg = quoted.msg || quoted;
     const mime = msg.mimetype || "";
-
     let kind;
     if (quoted.type === "documentMessage") kind = "document";
     else if (quoted.type === "videoMessage" || quoted.type === "ptvMessage") kind = "video";
@@ -116,7 +113,7 @@ async function searchSong(query) {
             const url = item.url || (item.videoId ? `https://www.youtube.com/watch?v=${item.videoId}` : null);
             if (url) return { url, title: item.title, duration: item.duration, author: authorName(item.author) };
         }
-    } catch (err) { /* fall through to yt-search */ }
+    } catch (err) { /* fall through */ }
 
     try {
         const res = await yts(query);
@@ -128,7 +125,6 @@ async function searchSong(query) {
 
 async function getAudioDownload(videoUrl) {
     const headers = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" };
-
     try {
         const { data } = await axios.get(
             `https://xenosirapis.zone.id/api/ytmp3dl?url=${encodeURIComponent(videoUrl)}`,
@@ -148,7 +144,7 @@ async function getAudioDownload(videoUrl) {
     return null;
 }
 
-// ───────────────────────── the command ─────────────────────────
+// ───────────────────────── command definition ─────────────────────────
 const activeCsongRequests = new Set();
 
 cmd({
@@ -160,7 +156,6 @@ cmd({
 },
 async (conn, mek, m, { from, q, prefix, reply }) => {
     const p = prefix || ".";
-
     const msgId = mek.key?.id;
     if (msgId) {
         if (activeCsongRequests.has(msgId)) return;
@@ -177,8 +172,7 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
         return await reply(
             `*CSONG COMMAND USAGE*\n\n` +
             `Send songs directly to a WhatsApp Channel.\n\n` +
-            `*Format 1 (Search/URL):* ${p}csong <Channel Link> , <Song Name or YT URL>\n` +
-            `*Format 2 (Reply Audio):* Reply to an audio/video message with ${p}csong <Channel Link>\n\n` +
+            `*Format:* ${p}csong <Channel Link> , <Song Name or YT URL>\n` +
             `*Example:* ${p}csong https://whatsapp.com/channel/0029VaXXXXXX , Faded`
         );
     }
@@ -200,11 +194,7 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
     }
 
     if (!channelInput || (!songQuery && !isQuotedAudio)) {
-        return await reply(
-            `Invalid format!\n\n` +
-            `Please provide both Channel Link and Song Name (or reply to an audio message).\n` +
-            `*Example:* ${p}csong https://whatsapp.com/channel/0029VaXXXXXX , Faded`
-        );
+        return await reply(`Invalid format! Provide both a Channel Link and Song Name.`);
     }
 
     const tmpDir = path.join(process.cwd(), "tmp");
@@ -212,7 +202,7 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
 
     const uniqueId = crypto.randomBytes(6).toString("hex");
     const inputPath = path.join(tmpDir, `csong_in_${uniqueId}.mp3`);
-    const outputPath = path.join(tmpDir, `csong_vn_${uniqueId}.opus`);
+    let outputPath = path.join(tmpDir, `csong_out_${uniqueId}.opus`);
 
     try {
         await conn.sendMessage(from, { react: { text: "🔍", key: mek.key } });
@@ -237,7 +227,7 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
 
             if (ytId) {
                 videoUrl = `https://www.youtube.com/watch?v=${ytId}`;
-                try { info = await searchSong(videoUrl); } catch (err) { /* metadata is optional */ }
+                try { info = await searchSong(videoUrl); } catch (err) {}
             } else {
                 info = await searchSong(songQuery);
                 if (!info) throw new Error("No search results found for: " + songQuery);
@@ -269,95 +259,61 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
         const safeArtist = (config.botName || "Mini Bot").replace(/["'$`\\]/g, "");
         const isNewsletter = channelJid.endsWith("@newsletter");
 
-        // Channels require standard audio format (mimetype audio/mp4), regular chats use voice note format (audio/ogg)
-        const baseArgs = isNewsletter ? [
-            "-y", "-i", inputPath, "-vn",
-            "-c:a", "aac", "-b:a", "128k",
-            "-metadata", `title=${safeTitle}`,
-            "-metadata", `artist=${safeArtist}`
-        ] : [
-            "-y", "-i", inputPath, "-vn",
-            "-c:a", "libopus", "-b:a", "48k", "-ac", "1", "-ar", "48000",
-            "-metadata", `title=${safeTitle}`,
-            "-metadata", `artist=${safeArtist}`
-        ];
-
-        const encoderVariants = isNewsletter ? [[]] : [["-application", "voip"], []];
-
-        let voiceBuffer = null;
-        let seconds = 0;
-
-        for (const extra of encoderVariants) {
-            try {
-                await fs.remove(outputPath).catch(() => { });
-                const targetOutput = isNewsletter ? path.join(tmpDir, `csong_out_${uniqueId}.m4a`) : outputPath;
-                const stderr = await runFfmpeg([...baseArgs, ...extra, targetOutput]);
-                seconds = parseSeconds(stderr);
-                
-                if (await fs.pathExists(targetOutput)) {
-                    voiceBuffer = await fs.readFile(targetOutput);
-                    if (voiceBuffer.length > 1000) {
-                        // Keep reference path updated for cleanup
-                        if (isNewsletter) {
-                            // temporary reassign target path for cleanup tracking
-                            outputPath.endsWith('.opus') && (outputPath = targetOutput);
-                        }
-                        break;
-                    }
-                }
-                voiceBuffer = null;
-            } catch (err) {
-                console.error("[csong] FFmpeg attempt failed:", (err.stderr || err.message || "").toString().slice(-300));
-            }
+        // Format conversion settings based on destination type (Newsletter channels need AAC/m4a format)
+        let baseArgs;
+        if (isNewsletter) {
+            outputPath = path.join(tmpDir, `csong_out_${uniqueId}.m4a`);
+            baseArgs = [
+                "-y", "-i", inputPath, "-vn",
+                "-c:a", "aac", "-b:a", "128k",
+                "-metadata", `title=${safeTitle}`,
+                "-metadata", `artist=${safeArtist}`
+            ];
+        } else {
+            baseArgs = [
+                "-y", "-i", inputPath, "-vn",
+                "-c:a", "libopus", "-b:a", "48k", "-ac", "1", "-ar", "48000",
+                "-metadata", `title=${safeTitle}`,
+                "-metadata", `artist=${safeArtist}`
+            ];
         }
 
-        if (!voiceBuffer) throw new Error("Audio conversion failed (ffmpeg error).");
-        if (!seconds || seconds < 1) seconds = Math.max(1, Math.round(voiceBuffer.length / 6000));
+        const stderr = await runFfmpeg([...baseArgs, outputPath]);
+        const seconds = parseSeconds(stderr) || Math.max(1, Math.round((await fs.stat(outputPath)).size / 6000));
 
-        try {
-            if (typeof conn.newsletterMetadata === "function") await conn.newsletterMetadata("jid", channelJid);
-        } catch (err) { /* metadata check is optional */ }
+        const audioBuffer = await fs.readFile(outputPath);
+        if (!audioBuffer || audioBuffer.length < 1000) throw new Error("Audio conversion buffer is empty.");
 
-        // Send payload safely based on whether target is a Channel (Newsletter) or standard chat
+        // Dispatch correctly according to channel rules (ptt: false for channels)
         const channelVoiceMsg = await conn.sendMessage(channelJid, {
-            audio: voiceBuffer,
+            audio: audioBuffer,
             mimetype: isNewsletter ? "audio/mp4" : "audio/ogg; codecs=opus",
             ptt: !isNewsletter,
             seconds
         });
 
-        if (!channelVoiceMsg) throw new Error("Audio was not accepted by the channel.");
+        if (!channelVoiceMsg) throw new Error("Audio was not accepted by the target channel.");
 
-        // Optional: Send track title caption text as a reply inside the channel
         await new Promise(r => setTimeout(r, 1000));
-        const channelCaption = `🎵 *${title}*`;
-        try {
-            await conn.sendMessage(channelJid, { text: channelCaption }, { quoted: channelVoiceMsg });
-        } catch (err) {
-            await conn.sendMessage(channelJid, { text: channelCaption });
-        }
+        await conn.sendMessage(channelJid, { text: `🎵 *${title}*` }, { quoted: channelVoiceMsg }).catch(async () => {
+            await conn.sendMessage(channelJid, { text: `🎵 *${title}*` });
+        });
 
         await conn.sendMessage(from, { react: { text: "✅", key: mek.key } });
-
-        const chatDetailsText =
+        await reply(
             `*DONE SENT TO CHANNEL* 🎀✨\n\n` +
-            `*Title:* ${title || songQuery}\n` +
+            `*Title:* ${title}\n` +
             (author ? `*Artist:* ${author}\n` : ``) +
-            (duration ? `*Duration:* ${duration}\n` : ``) +
-            (videoUrl ? `*URL:* ${videoUrl}\n` : ``) +
             `*Channel JID:* ${channelJid}\n` +
-            `*Format:* ${isNewsletter ? "Audio Track (AAC/MP4)" : "Voice Note (OPUS)"}`;
-
-        await conn.sendMessage(from, { text: chatDetailsText }, { quoted: mek });
+            `*Format:* ${isNewsletter ? "Audio Track (AAC/MP4)" : "Voice Note (OPUS)"}`
+        );
 
     } catch (e) {
         console.error("[csong] Error:", e.message);
-        await conn.sendMessage(from, { react: { text: "❌", key: mek.key } }).catch(() => { });
+        await conn.sendMessage(from, { react: { text: "❌", key: mek.key } }).catch(() => {});
         await reply("Error: " + e.message);
     } finally {
-        if (await fs.pathExists(inputPath)) await fs.remove(inputPath).catch(() => { });
-        if (await fs.pathExists(outputPath)) await fs.remove(outputPath).catch(() => { });
-        const altM4a = path.join(tmpDir, `csong_out_${uniqueId}.m4a`);
-        if (await fs.pathExists(altM4a)) await fs.remove(altM4a).catch(() => { });
+        if (await fs.pathExists(inputPath)) await fs.remove(inputPath).catch(() => {});
+        if (await fs.pathExists(outputPath)) await fs.remove(outputPath).catch(() => {});
     }
 });
