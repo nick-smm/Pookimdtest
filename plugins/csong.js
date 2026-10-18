@@ -1,3 +1,7 @@
+// CSONG - Send a song as a voice note (with audio waves) to a WhatsApp Channel
+// Ported from XENO XD to the NICK MINI BOT `cmd()` plugin system.
+// Dev Xeno Exe
+
 const axios = require("axios");
 const { execFile } = require("child_process");
 const fs = require("fs-extra");
@@ -13,6 +17,9 @@ const { cmd } = require("../command");
 
 const execFilePromise = util.promisify(execFile);
 
+// ───────────────────────── ffmpeg helpers ─────────────────────────
+// The big bot calls the system `ffmpeg` through a shell. A mini bot usually runs
+// on hosts without system ffmpeg, so try the bundled ffmpeg-static binary first.
 let ffmpegStaticPath = null;
 try { ffmpegStaticPath = require("ffmpeg-static"); } catch (e) { /* optional */ }
 
@@ -38,6 +45,7 @@ async function getFfmpeg() {
     return null;
 }
 
+// Runs ffmpeg without a shell (safe for any title text); resolves with stderr text.
 async function runFfmpeg(args) {
     const bin = await getFfmpeg();
     if (!bin) throw new Error("ffmpeg not found");
@@ -52,19 +60,21 @@ function parseSeconds(stderr) {
     return Math.round(+t[1] * 3600 + +t[2] * 60 + parseFloat(t[3]));
 }
 
+// ───────────────────────── small helpers ─────────────────────────
 function getYouTubeId(url) {
     const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=|shorts\/)([^#\&\?]*).*/;
     const match = url.match(regExp);
     return (match && match[2].length === 11) ? match[2] : null;
 }
 
+// Stylish audio-wave bars shown on the voice note (same as XENO XD)
 function createStylishWaveform(length = 64) {
     const waveform = new Uint8Array(length);
     for (let i = 0; i < length; i++) {
         const progress = i / length;
         const envelope = Math.sin(progress * Math.PI);
         const beats = Math.abs(Math.sin(i * 0.35) * Math.cos(i * 0.15));
-        const randomNoise = Math.random() * 0.2;
+        const randomNoise = (Math.random() * 0.2);
         const height = Math.floor((envelope * 0.5 + beats * 0.4 + randomNoise * 0.1) * 95) + 5;
         waveform[i] = Math.min(100, Math.max(5, height));
     }
@@ -92,6 +102,7 @@ async function resolveChannelJid(conn, input) {
     return null;
 }
 
+// Download the audio/video the user replied to (mini bot's m.quoted shape).
 async function downloadQuotedMedia(quoted) {
     const msg = quoted.msg || quoted;
     const mime = msg.mimetype || "";
@@ -112,6 +123,7 @@ function authorName(author) {
     return typeof author === "object" ? (author?.name || "") : (author || "");
 }
 
+// Search a song. Primary: Xeno search API. Fallback: yt-search (already in package.json).
 async function searchSong(query) {
     try {
         const { data } = await axios.get(
@@ -130,6 +142,7 @@ async function searchSong(query) {
     return { url: v.url, title: v.title, duration: v.timestamp, author: v.author?.name || "" };
 }
 
+// Get an mp3 download link. Primary: Xeno ytdl API. Fallback: dreaded API.
 async function getAudioDownload(videoUrl) {
     try {
         const { data } = await axios.get(
@@ -147,6 +160,7 @@ async function getAudioDownload(videoUrl) {
     return url ? { url, title: null } : null;
 }
 
+// ───────────────────────── the command ─────────────────────────
 const activeCsongRequests = new Set();
 
 cmd({
@@ -159,6 +173,7 @@ cmd({
 async (conn, mek, m, { from, q, prefix, reply }) => {
     const p = prefix || ".";
 
+    // Ignore duplicate deliveries of the same message
     const msgId = mek.key?.id;
     if (msgId) {
         if (activeCsongRequests.has(msgId)) return;
@@ -175,9 +190,9 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
         return await reply(
             `ＳＯＮＧ  ＣＨＡＮＮＥＬ  ＳＯＮＧ \n\n` +
             `Send stylish songs with audio waves directly to a WhatsApp Channel.\n\n` +
-            `*Format 1 (Search/URL):* ${p}csong <Channel Link> , <Song Name or YT URL>\n` +
-            `*Format 2 (Reply Audio):* Reply to an audio/video message with ${p}csong <Channel Link>\n\n` +
-            `*Example:* ${p}csong https://whatsapp.com/channel/0029VaXXXXXX , Faded`
+            `*Format 1 (Search/URL):*\n${p}csong <Channel Link> , <Song Name or YT URL>\n\n` +
+            `*Format 2 (Reply Audio):*\nReply to audio message with ${p}csong <Channel Link>\n\n` +
+            `*Example:*\n${p}csong https://whatsapp.com/channel/0029VaXXXXXX , Faded`
         );
     }
 
@@ -234,6 +249,7 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             let info = null;
 
             if (ytId) {
+                // Direct YouTube link: use it as-is, search only to get nice metadata
                 videoUrl = `https://www.youtube.com/watch?v=${ytId}`;
                 try { info = await searchSong(videoUrl); } catch (err) { /* metadata is optional */ }
             } else {
@@ -263,8 +279,9 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
 
         await conn.sendMessage(from, { react: { text: "🎙️", key: mek.key } });
 
+        // Convert to OGG/Opus mono 48kHz (the format WhatsApp needs for a PTT voice note)
         const safeTitle = (title || "Audio").replace(/["'$`\\]/g, "");
-        const safeArtist = (author || config.botName || "𝁟𝗦𝗽⃯𝘂𝘁𝗶𝗳𝘆𝘆🧑🏼‍🩰🎶").replace(/["'$`\\]/g, "");
+        const safeArtist = (author || config.botName || "Mini Bot").replace(/["'$`\\]/g, "");
         const baseArgs = [
             "-y", "-i", inputPath, "-vn",
             "-c:a", "libopus", "-b:a", "48k", "-ac", "1", "-ar", "48000",
@@ -295,37 +312,44 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             }
         }
 
+        // Same fallback as the big bot: if conversion fails, send the original mp3 as normal audio
         if (!voiceBuffer) {
             voiceBuffer = await fs.readFile(inputPath);
             mimetype = "audio/mpeg";
-            if (!seconds) seconds = Math.max(1, Math.round(voiceBuffer.length / 16000));
+            if (!seconds) seconds = Math.max(1, Math.round(voiceBuffer.length / 16000)); // ~128kbps estimate
         } else if (!seconds || seconds < 1) {
-            seconds = Math.max(1, Math.round(voiceBuffer.length / 6000));
+            seconds = Math.max(1, Math.round(voiceBuffer.length / 6000)); // ~48kbps estimate
         }
 
+        // 1. Send the voice note with dynamic audio-wave bars to the WhatsApp channel.
+        // `seconds` is passed explicitly: this mini bot runs Baileys 7 which cannot
+        // always read the audio length itself, and the channel would show 0:00.
+        const waveformData = createStylishWaveform(64);
         const channelVoiceMsg = await conn.sendMessage(channelJid, {
             audio: voiceBuffer,
             mimetype,
             ptt: mimetype.includes("opus"),
             seconds,
-            waveform: createStylishWaveform(64)
+            waveform: waveformData
         });
         if (!channelVoiceMsg) throw new Error("Voice note was not accepted by the channel.");
 
+        // 2. Reply to the voice note inside the channel with the stylish music player card
         await new Promise(r => setTimeout(r, 1000));
         const channelCaption =
             `*${title}*\n` +
             (author ? `*Artist:* ${author}\n` : ``) +
             `━━━━━━━•────────────────\n` +
             `⇆   ◁   ❚❚   ▷   ↻\n` +
-            `*𝁟𝗦𝗽⃯𝘂𝘁𝗶𝗳𝘆𝘆🧑🏼🩰🎶*`;
+            `*${config.botName || "Mini Bot"}*`;
         try {
-            await conn.sendMessage(channelJid, { text: channelCaption.trim() }, { quoted: channelVoiceMsg });
+            await conn.sendMessage(channelJid, { text: channelCaption }, { quoted: channelVoiceMsg });
         } catch (err) {
             console.error("[csong] Quoted title failed, sending plain:", err.message);
-            await conn.sendMessage(channelJid, { text: channelCaption.trim() });
+            await conn.sendMessage(channelJid, { text: channelCaption });
         }
 
+        // 3. Confirmation in the chat where the command was used
         await conn.sendMessage(from, { react: { text: "✅", key: mek.key } });
 
         const chatDetailsText =
