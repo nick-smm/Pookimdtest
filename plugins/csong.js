@@ -2,9 +2,7 @@ const { cmd } = require('../command');
 const axios = require('axios');
 const { botName } = require('../config');
 
-// ─────────────────────────────────────────────
-//  Helper: extract YouTube video ID from any URL
-// ─────────────────────────────────────────────
+
 function extractYouTubeId(input) {
     const patterns = [
         /(?:youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/,
@@ -37,7 +35,7 @@ cmd(
             conn.sendMessage(from, { text }, { quoted: mek }).catch(() => {});
 
         try {
-            // ── 0. Parse args: first token = channelJID, rest = query ──
+
             const raw = (q || '').trim();
             const parts = raw.split(/\s+/);
 
@@ -109,8 +107,8 @@ cmd(
                 return await statusMsg('❌ No song results found. Try a different name or paste a YouTube link.');
             }
 
-            // ── 3. Extract metadata ─────────────────────────────────
-            if (searchItem) {
+
+                if (searchItem) {
                 title    = searchItem.title    || title;
                 duration = searchItem.duration || searchItem.length || '';
                 author   = typeof searchItem.author === 'object'
@@ -127,7 +125,6 @@ cmd(
             await statusReact('📥');
             await statusMsg(`📥 Downloading *${title}*… sending PTT to channel.`);
 
-            // ── 4. Fetch download URL ───────────────────────────────
             let downloadUrl = null;
 
             try {
@@ -161,20 +158,18 @@ cmd(
                 return await statusMsg('❌ All download servers are busy. Please try again in a moment.');
             }
 
-            // ── 5. Build channel caption text ───────────────────────
             const channelCaption =
                 `🎵 *${title}*\n` +
                 (author   ? `👤 ${author}\n`   : '') +
                 (duration ? `⏱️ ${duration}\n` : '') +
                 `\n> ${botName || 'Bot'}`;
 
-            // ── 6. Send ONLY the Voice Note (PTT) with Thumbnail Preview to Channel ──
             await conn.sendMessage(channelJid, {
                 audio: { url: downloadUrl },
                 mimetype: 'audio/mpeg',
-                ptt: true,            // Send as a voice note bubble
+                ptt: true,            
                 fileName: `${title}.mp3`,
-                caption: channelCaption, // Attach description right with the voice note
+                caption: channelCaption, 
                 contextInfo: {
                     externalAdReply: {
                         title: title,
@@ -188,7 +183,6 @@ cmd(
                 },
             });
 
-            // ── 7. Confirm success in the command chat only ─────────
             await statusReact('✅');
             await statusMsg(
                 `✅ *Voice note sent to channel successfully!*\n\n` +
