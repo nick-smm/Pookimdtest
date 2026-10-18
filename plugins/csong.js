@@ -18,8 +18,6 @@ const { cmd } = require("../command");
 const execFilePromise = util.promisify(execFile);
 
 // ───────────────────────── ffmpeg helpers ─────────────────────────
-// The big bot calls the system `ffmpeg` through a shell. A mini bot usually runs
-// on hosts without system ffmpeg, so try the bundled ffmpeg-static binary first.
 let ffmpegStaticPath = null;
 try { ffmpegStaticPath = require("ffmpeg-static"); } catch (e) { /* optional */ }
 
@@ -45,7 +43,6 @@ async function getFfmpeg() {
     return null;
 }
 
-// Runs ffmpeg without a shell (safe for any title text); resolves with stderr text.
 async function runFfmpeg(args) {
     const bin = await getFfmpeg();
     if (!bin) throw new Error("ffmpeg not found");
@@ -88,7 +85,6 @@ async function resolveChannelJid(conn, input) {
     return null;
 }
 
-// Download the audio/video the user replied to (mini bot's m.quoted shape).
 async function downloadQuotedMedia(quoted) {
     const msg = quoted.msg || quoted;
     const mime = msg.mimetype || "";
@@ -109,7 +105,6 @@ function authorName(author) {
     return typeof author === "object" ? (author?.name || "") : (author || "");
 }
 
-// Search a song with the Xeno search API (yt-search kept only as a last-resort fallback).
 async function searchSong(query) {
     try {
         const { data: searchRes } = await axios.get(
@@ -131,7 +126,6 @@ async function searchSong(query) {
     return null;
 }
 
-// Get an mp3 download link. Same API chain as song.js: xenosirapis -> xenoytdl-2.
 async function getAudioDownload(videoUrl) {
     const headers = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" };
 
@@ -167,7 +161,6 @@ cmd({
 async (conn, mek, m, { from, q, prefix, reply }) => {
     const p = prefix || ".";
 
-    // Ignore duplicate deliveries of the same message
     const msgId = mek.key?.id;
     if (msgId) {
         if (activeCsongRequests.has(msgId)) return;
@@ -243,7 +236,6 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             let info = null;
 
             if (ytId) {
-                // Direct YouTube link: use it as-is, search only to get nice metadata
                 videoUrl = `https://www.youtube.com/watch?v=${ytId}`;
                 try { info = await searchSong(videoUrl); } catch (err) { /* metadata is optional */ }
             } else {
@@ -273,7 +265,6 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
 
         await conn.sendMessage(from, { react: { text: "🎙️", key: mek.key } });
 
-        // Convert to OGG/Opus mono 48kHz (the format WhatsApp needs for a PTT voice note)
         const safeTitle = (title || "Audio").replace(/["'$`\\]/g, "");
         const safeArtist = (config.botName || "Mini Bot").replace(/["'$`\\]/g, "");
         const baseArgs = [
@@ -288,7 +279,7 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
         ];
 
         let voiceBuffer = null;
-                let seconds = 0;
+        let seconds = 0;
 
         for (const extra of encoderVariants) {
             try {
@@ -305,22 +296,19 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             }
         }
 
-        // Always send as a recorded voice note (no plain-mp3 fallback)
         if (!voiceBuffer) throw new Error("Voice note conversion failed (ffmpeg error).");
-        if (!seconds || seconds < 1) seconds = Math.max(1, Math.round(voiceBuffer.length / 6000)); // ~48kbps estimate
+        if (!seconds || seconds < 1) seconds = Math.max(1, Math.round(voiceBuffer.length / 6000));
 
-        // 1. Open the channel (verify it exists) and show "recording audio..." like a real voice note
         try {
             if (typeof conn.newsletterMetadata === "function") await conn.newsletterMetadata("jid", channelJid);
         } catch (err) { /* metadata check is optional */ }
+
         try {
             await conn.presenceSubscribe(channelJid).catch(() => { });
             await conn.sendPresenceUpdate("recording", channelJid);
             await new Promise(r => setTimeout(r, Math.min(Math.max(seconds, 2), 6) * 1000));
         } catch (err) { /* presence is cosmetic */ }
 
-        // 2. Send as a fresh recorded voice note (ptt) - no contextInfo, so it is NOT marked as forwarded.
-        // `seconds` is passed explicitly so the channel doesn't show 0:00.
         const channelVoiceMsg = await conn.sendMessage(channelJid, {
             audio: voiceBuffer,
             mimetype: "audio/ogg; codecs=opus",
@@ -330,7 +318,6 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
         await conn.sendPresenceUpdate("paused", channelJid).catch(() => { });
         if (!channelVoiceMsg) throw new Error("Voice note was not accepted by the channel.");
 
-        // 3. Reply to the voice note inside the channel with the song title only
         await new Promise(r => setTimeout(r, 1000));
         const channelCaption = `🎵 *${title}*`;
         try {
@@ -340,7 +327,6 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             await conn.sendMessage(channelJid, { text: channelCaption });
         }
 
-        // 4. Confirmation in the chat where the command was used
         await conn.sendMessage(from, { react: { text: "✅", key: mek.key } });
 
         const chatDetailsText =
