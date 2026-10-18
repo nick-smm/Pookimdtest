@@ -62,7 +62,7 @@ cmd(
             await statusReact('🔍');
             await statusMsg(`🔍 Searching: *${songQuery}*…`);
 
-            // ── 1. Resolve video URL & metadata ────────────────────
+            // ── 1. Resolve video URL & metadata via xenoytserch ────
             const isUrl = /^(https?:\/\/)?(www\.)?(youtube\.com\/[^\s]+|youtu\.be\/[^\s]+)$/i.test(songQuery);
 
             let videoUrl   = isUrl ? songQuery : null;
@@ -72,44 +72,43 @@ cmd(
             let author     = '';
             let thumbnail  = '';
 
-            if (isUrl) {
-                // Try fetching metadata for direct URL
-                try {
-                    const { data: searchRes } = await axios.get(
-                        `https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(videoUrl)}`,
-                        { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 12000 }
-                    );
-                    if (searchRes.results?.length) searchItem = searchRes.results[0];
-                } catch (_) { /* metadata optional */ }
-            } else {
-                // Primary search: xenoytserch
-                try {
-                    const { data: searchRes } = await axios.get(
-                        `https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(songQuery)}`,
-                        { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 15000 }
-                    );
-                    if (!searchRes.results?.length) throw new Error('No results');
-                    searchItem = searchRes.results[0];
-                    videoUrl   = searchItem.url;
-                } catch (err) {
-                    console.warn('[csong] xenoytserch error:', err.message);
+            // Helper: extract the best URL from a xenoytserch result object
+            const resolveUrl = (item) => {
+                if (!item) return null;
+                if (item.url && item.url.startsWith('http')) return item.url;
+                const vid = item.videoId || item.id || extractYouTubeId(item.url || '');
+                if (vid) return `https://www.youtube.com/watch?v=${vid}`;
+                return null;
+            };
 
-                    // Fallback search: xenosirapis
-                    try {
-                        const { data: fbRes } = await axios.get(
-                            `https://xenosirapis.zone.id/api/ytsearch?query=${encodeURIComponent(songQuery)}`,
-                            { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }, timeout: 20000 }
-                        );
-                        if (fbRes?.results?.length) {
-                            searchItem = fbRes.results[0];
-                            const id = searchItem.videoId || extractYouTubeId(searchItem.url || '');
-                            videoUrl = id
-                                ? `https://www.youtube.com/watch?v=${id}`
-                                : searchItem.url;
-                        }
-                    } catch (fbErr) {
-                        console.warn('[csong] xenosirapis fallback error:', fbErr.message);
-                    }
+            // Always query xenoytserch (for metadata on URLs, and for text search)
+            try {
+                const searchQ = isUrl ? songQuery : songQuery;
+                const { data: searchRes } = await axios.get(
+                    `https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(searchQ)}`,
+                    { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 18000 }
+                );
+
+                // Handle both array root response and { results: [...] }
+                const results = Array.isArray(searchRes)
+                    ? searchRes
+                    : (searchRes?.results || searchRes?.data || []);
+
+                if (results.length > 0) {
+                    searchItem = results[0];
+                    const resolved = resolveUrl(searchItem);
+                    if (!isUrl && resolved) videoUrl = resolved;
+                    else if (!isUrl) throw new Error('Could not resolve video URL from result');
+                } else {
+                    throw new Error('Empty results from xenoytserch');
+                }
+            } catch (err) {
+                console.warn('[csong] xenoytserch search error:', err.message);
+                if (!videoUrl) {
+                    await statusReact('❌');
+                    return await statusMsg(
+                        `❌ No results found for: *${songQuery}*\n_Try a different song name or paste a YouTube link._`
+                    );
                 }
             }
 
