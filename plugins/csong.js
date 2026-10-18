@@ -1,5 +1,5 @@
-// CSONG - Send a song as a voice note (with audio waves) to a WhatsApp Channel
-// Ported from XENO XD to the NICK MINI BOT `cmd()` plugin system.
+// CSONG - Send a song as a voice note to a WhatsApp Channel
+// Ported from NOVA-XD (newbotoct11) to the NICK MINI BOT `cmd()` plugin system.
 // Dev Xeno Exe
 
 const axios = require("axios");
@@ -67,20 +67,6 @@ function getYouTubeId(url) {
     return (match && match[2].length === 11) ? match[2] : null;
 }
 
-// Stylish audio-wave bars shown on the voice note (same as XENO XD)
-function createStylishWaveform(length = 64) {
-    const waveform = new Uint8Array(length);
-    for (let i = 0; i < length; i++) {
-        const progress = i / length;
-        const envelope = Math.sin(progress * Math.PI);
-        const beats = Math.abs(Math.sin(i * 0.35) * Math.cos(i * 0.15));
-        const randomNoise = (Math.random() * 0.2);
-        const height = Math.floor((envelope * 0.5 + beats * 0.4 + randomNoise * 0.1) * 95) + 5;
-        waveform[i] = Math.min(100, Math.max(5, height));
-    }
-    return Buffer.from(waveform);
-}
-
 async function resolveChannelJid(conn, input) {
     if (!input) return null;
     const cleanInput = input.trim();
@@ -123,41 +109,49 @@ function authorName(author) {
     return typeof author === "object" ? (author?.name || "") : (author || "");
 }
 
-// Search a song. Primary: Xeno search API. Fallback: yt-search (already in package.json).
+// Search a song with the Xeno search API (yt-search kept only as a last-resort fallback).
 async function searchSong(query) {
     try {
-        const { data } = await axios.get(
+        const { data: searchRes } = await axios.get(
             `https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(query)}`,
-            { timeout: 10000 }
+            { timeout: 15000 }
         );
-        const item = data?.results?.[0];
-        if (item?.url) {
-            return { url: item.url, title: item.title, duration: item.duration, author: authorName(item.author) };
+        if (searchRes?.results?.length) {
+            const item = searchRes.results[0];
+            const url = item.url || (item.videoId ? `https://www.youtube.com/watch?v=${item.videoId}` : null);
+            if (url) return { url, title: item.title, duration: item.duration, author: authorName(item.author) };
         }
     } catch (err) { /* fall through to yt-search */ }
 
-    const res = await yts(query);
-    const v = res?.videos?.[0];
-    if (!v) return null;
-    return { url: v.url, title: v.title, duration: v.timestamp, author: v.author?.name || "" };
+    try {
+        const res = await yts(query);
+        const v = res?.videos?.[0];
+        if (v) return { url: v.url, title: v.title, duration: v.timestamp, author: v.author?.name || "" };
+    } catch (err) { /* nothing found */ }
+    return null;
 }
 
-// Get an mp3 download link. Primary: Xeno ytdl API. Fallback: dreaded API.
+// Get an mp3 download link. Same API chain as song.js: xenosirapis -> xenoytdl-2.
 async function getAudioDownload(videoUrl) {
+    const headers = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" };
+
+    try {
+        const { data } = await axios.get(
+            `https://xenosirapis.zone.id/api/ytmp3dl?url=${encodeURIComponent(videoUrl)}`,
+            { headers, timeout: 30000 }
+        );
+        if (data?.success && data?.downloadUrl) return { url: data.downloadUrl, title: data.title };
+    } catch (err) { /* try next */ }
+
     try {
         const { data } = await axios.get(
             `https://xenoytdl-2.vercel.app/api/youtube?url=${encodeURIComponent(videoUrl)}&format=mp3`,
-            { timeout: 20000 }
+            { headers, timeout: 20000 }
         );
         if (data?.download) return { url: data.download, title: data.title };
-    } catch (err) { /* fall through to fallback API */ }
+    } catch (err) { /* no more fallbacks */ }
 
-    const { data } = await axios.get(
-        `https://api.dreaded.site/api/ytdl/video?url=${encodeURIComponent(videoUrl)}`,
-        { timeout: 20000 }
-    );
-    const url = data?.result?.download?.url || data?.download;
-    return url ? { url, title: null } : null;
+    return null;
 }
 
 // ───────────────────────── the command ─────────────────────────
@@ -188,11 +182,11 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
 
     if (!text && !isQuotedAudio) {
         return await reply(
-            `ＳＯＮＧ  ＣＨＡＮＮＥＬ  ＳＯＮＧ \n\n` +
-            `Send stylish songs with audio waves directly to a WhatsApp Channel.\n\n` +
-            `*Format 1 (Search/URL):*\n${p}csong <Channel Link> , <Song Name or YT URL>\n\n` +
-            `*Format 2 (Reply Audio):*\nReply to audio message with ${p}csong <Channel Link>\n\n` +
-            `*Example:*\n${p}csong https://whatsapp.com/channel/0029VaXXXXXX , Faded`
+            `*CSONG COMMAND USAGE*\n\n` +
+            `Send songs as a voice note directly to a WhatsApp Channel.\n\n` +
+            `*Format 1 (Search/URL):* ${p}csong <Channel Link> , <Song Name or YT URL>\n` +
+            `*Format 2 (Reply Audio):* Reply to an audio/video message with ${p}csong <Channel Link>\n\n` +
+            `*Example:* ${p}csong https://whatsapp.com/channel/0029VaXXXXXX , Faded`
         );
     }
 
@@ -281,7 +275,7 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
 
         // Convert to OGG/Opus mono 48kHz (the format WhatsApp needs for a PTT voice note)
         const safeTitle = (title || "Audio").replace(/["'$`\\]/g, "");
-        const safeArtist = (author || config.botName || "Mini Bot").replace(/["'$`\\]/g, "");
+        const safeArtist = (config.botName || "Mini Bot").replace(/["'$`\\]/g, "");
         const baseArgs = [
             "-y", "-i", inputPath, "-vn",
             "-c:a", "libopus", "-b:a", "48k", "-ac", "1", "-ar", "48000",
@@ -321,27 +315,20 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             seconds = Math.max(1, Math.round(voiceBuffer.length / 6000)); // ~48kbps estimate
         }
 
-        // 1. Send the voice note with dynamic audio-wave bars to the WhatsApp channel.
+        // 1. Send the voice note to the WhatsApp channel.
         // `seconds` is passed explicitly: this mini bot runs Baileys 7 which cannot
         // always read the audio length itself, and the channel would show 0:00.
-        const waveformData = createStylishWaveform(64);
         const channelVoiceMsg = await conn.sendMessage(channelJid, {
             audio: voiceBuffer,
             mimetype,
             ptt: mimetype.includes("opus"),
-            seconds,
-            waveform: waveformData
+            seconds
         });
         if (!channelVoiceMsg) throw new Error("Voice note was not accepted by the channel.");
 
-        // 2. Reply to the voice note inside the channel with the stylish music player card
+        // 2. Reply to the voice note inside the channel with the song title only
         await new Promise(r => setTimeout(r, 1000));
-        const channelCaption =
-            `*${title}*\n` +
-            (author ? `*Artist:* ${author}\n` : ``) +
-            `━━━━━━━•────────────────\n` +
-            `⇆   ◁   ❚❚   ▷   ↻\n` +
-            `*${config.botName || "Mini Bot"}*`;
+        const channelCaption = `🎵 *${title}*`;
         try {
             await conn.sendMessage(channelJid, { text: channelCaption }, { quoted: channelVoiceMsg });
         } catch (err) {
@@ -353,17 +340,13 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
         await conn.sendMessage(from, { react: { text: "✅", key: mek.key } });
 
         const chatDetailsText =
-            `*ＳＯＮＧ  ＦＯＲＷＡＲＤＥＤ*\n\n` +
-            `╭─────────────────────────┈\n` +
-            `│ *Title:* ${title || songQuery}\n` +
-            (author ? `│ *Artist:* ${author}\n` : ``) +
-            (duration ? `│ *Duration:* ${duration}\n` : ``) +
-            (videoUrl ? `│ *URL:* ${videoUrl}\n` : ``) +
-            `│ *Channel:* ${channelJid}\n` +
-            `│ *Waves:* Enabled (${mimetype.includes("opus") ? "Voice Note" : "Audio"})\n` +
-            `╰─────────────────────────┈\n\n` +
-            `━━━━━━━•────────────────\n` +
-            `⇆   ◁   ❚❚   ▷   ↻`;
+            `* *DONE FORWARDED*🎀* ✨\n\n` +
+            `*Title:* ${title || songQuery}\n` +
+            (author ? `*Artist:* ${author}\n` : ``) +
+            (duration ? `*Duration:* ${duration}\n` : ``) +
+            (videoUrl ? `*URL:* ${videoUrl}\n` : ``) +
+            `*Channel JID:* ${channelJid}\n` +
+            `*Format:* ${mimetype.includes("opus") ? "Voice Note" : "Audio"}`;
 
         await conn.sendMessage(from, { text: chatDetailsText }, { quoted: mek });
 
