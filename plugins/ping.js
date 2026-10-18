@@ -1,10 +1,7 @@
 const config = require('../config');
 const { cmd } = require('../command');
 const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
-
-const FILE = path.join(__dirname, '..', 'ping2.json');
+const mongoose = require('mongoose');
 
 const DEFAULTS = {
     images: [
@@ -19,16 +16,42 @@ const DEFAULTS = {
     footer: "⚡𝑳𝜺𝝂𝜾⃮⃯⃔𝜶𝜼𝝄♪"
 };
 
-function load() {
-    try {
-        return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(FILE, 'utf8')) };
-    } catch {
-        return { ...DEFAULTS };
-    }
+// ---------- MongoDB: ഓരോ ബോട്ട് നമ്പറിനും ഒരു document ----------
+const Ping2Schema = new mongoose.Schema({
+    number: { type: String, required: true, unique: true },
+    images: { type: [String], default: undefined },
+    link: String,
+    title: String,
+    body: String,
+    footer: String
+});
+const Ping2 = mongoose.models.Ping2Settings || mongoose.model('Ping2Settings', Ping2Schema);
+
+function getBotNumber(conn) {
+    return (conn.user?.id || '').split(':')[0].split('@')[0];
 }
 
-function save(data) {
-    fs.writeFileSync(FILE, JSON.stringify(data, null, 2));
+async function load(num) {
+    const mine = (await Ping2.findOne({ number: num }).lean()) || {};
+    return {
+        images: [...(mine.images && mine.images.length ? mine.images : DEFAULTS.images)],
+        link: mine.link || DEFAULTS.link,
+        title: mine.title || DEFAULTS.title,
+        body: mine.body || DEFAULTS.body,
+        footer: mine.footer || DEFAULTS.footer
+    };
+}
+
+async function save(num, data) {
+    await Ping2.findOneAndUpdate(
+        { number: num },
+        { $set: { number: num, ...data } },
+        { upsert: true, new: true }
+    );
+}
+
+async function resetUser(num) {
+    await Ping2.deleteOne({ number: num });
 }
 
 async function getThumbnail(images) {
@@ -69,7 +92,7 @@ async (conn, mek, m, { from, reply }) => {
     }
 });
 
-// ---------- .ping2 : image card ping ----------
+// ---------- .ping2 : image card ping (ഈ ബോട്ട് നമ്പറിന്റെ settings) ----------
 cmd({
     pattern: "ping2",
     desc: "Ping with image card.",
@@ -79,7 +102,14 @@ cmd({
 },
 async (conn, mek, m, { from, reply }) => {
     try {
-        const v = load();
+        let v;
+        try {
+            v = await load(getBotNumber(conn));
+        } catch (e) {
+            console.error("Ping2 DB load failed:", e.message);
+            v = { ...DEFAULTS, images: [...DEFAULTS.images] };
+        }
+
         const startTime = Date.now();
         await conn.sendPresenceUpdate('composing', from).catch(() => {});
         const ping = Date.now() - startTime;
@@ -112,24 +142,23 @@ ${v.footer}`;
     }
 });
 
-// ---------- .setping2 : bot number only ----------
+// ---------- .setping2 : ഓരോ ബോട്ട് നമ്പറും സ്വന്തം ping മാത്രം മാറ്റും ----------
 cmd({
     pattern: "setping2",
-    desc: "Change ping2 look (bot number only).",
+    desc: "Change your own ping2 look (bot number only).",
     category: "owner",
     filename: __filename
 },
 async (conn, mek, m, { from, args, reply }) => {
     try {
-        // ബോട്ട് ഓടുന്ന നമ്പർ മാത്രം
-        const botNumber = (conn.user?.id || '').split(':')[0].split('@')[0];
+        const botNumber = getBotNumber(conn);
         const sender = (mek.key.participant || mek.key.remoteJid || '')
             .split('@')[0].split(':')[0];
 
         const isBot = mek.key.fromMe || sender === botNumber;
-        if (!isBot) return reply("ADMIN ONLY CHANGE ! 🚫");
+        if (!isBot) return reply("ബോട്ട് നമ്പറിൽ നിന്ന് മാത്രം! 🚫");
 
-        const v = load();
+        const v = await load(botNumber);
         const field = (args[0] || '').toLowerCase();
         const value = args.slice(1).join(' ').trim();
 
@@ -149,15 +178,15 @@ async (conn, mek, m, { from, args, reply }) => {
         if (['link', 'title', 'body', 'footer'].includes(field)) {
             if (!value) return reply("Value kodukku.");
             v[field] = value;
-            save(v);
+            await save(botNumber, v);
             return reply(`✅ ${field} = ${value}`);
         }
 
         if (field === 'addimg') {
             if (!/^https?:\/\//.test(value)) return reply("Valid image URL kodukku.");
             v.images.push(value);
-            save(v);
-            return reply(`✅ Image added (ആകെ ${v.images.length})`);
+            await save(botNumber, v);
+            return reply(`✅ Image add cheythu (ആകെ ${v.images.length})`);
         }
 
         if (field === 'delimg') {
@@ -165,8 +194,8 @@ async (conn, mek, m, { from, args, reply }) => {
             if (isNaN(i) || i < 0 || i >= v.images.length) return reply("Number thettanu. .setping2 images nokku.");
             if (v.images.length === 1) return reply("Oru image enkilum venam.");
             v.images.splice(i, 1);
-            save(v);
-            return reply("✅ Image removed");
+            await save(botNumber, v);
+            return reply("✅ Image remove cheythu");
         }
 
         if (field === 'images') {
@@ -174,7 +203,7 @@ async (conn, mek, m, { from, args, reply }) => {
         }
 
         if (field === 'reset') {
-            save({ ...DEFAULTS });
+            await resetUser(botNumber);
             return reply("✅ Default aakki");
         }
 
