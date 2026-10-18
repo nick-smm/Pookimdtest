@@ -16,7 +16,7 @@ const DEFAULTS = {
     footer: "⚡𝑳𝜺𝝂𝜾⃮⃯⃔𝜶𝜼𝝄♪"
 };
 
-// ---------- MongoDB: ഓരോ ബോട്ട് നമ്പറിനും ഒരു document ----------
+// ---------- MongoDB: one document per bot number ----------
 const Ping2Schema = new mongoose.Schema({
     number: { type: String, required: true, unique: true },
     images: { type: [String], default: undefined },
@@ -92,7 +92,7 @@ async (conn, mek, m, { from, reply }) => {
     }
 });
 
-// ---------- .ping2 : image card ping (ഈ ബോട്ട് നമ്പറിന്റെ settings) ----------
+// ---------- .ping2 : image card ping (this bot number's settings) ----------
 cmd({
     pattern: "ping2",
     desc: "Ping with image card.",
@@ -142,7 +142,7 @@ ${v.footer}`;
     }
 });
 
-// ---------- .setping2 : ഓരോ ബോട്ട് നമ്പറും സ്വന്തം ping മാത്രം മാറ്റും ----------
+// ---------- .setping2 : each bot number can change only its own ping ----------
 cmd({
     pattern: "setping2",
     desc: "Change your own ping2 look (bot number only).",
@@ -156,7 +156,7 @@ async (conn, mek, m, { from, args, reply }) => {
             .split('@')[0].split(':')[0];
 
         const isBot = mek.key.fromMe || sender === botNumber;
-        if (!isBot) return reply("ബോട്ട് നമ്പറിൽ നിന്ന് മാത്രം! 🚫");
+        if (!isBot) return reply("Only from the bot number! 🚫");
 
         const v = await load(botNumber);
         const field = (args[0] || '').toLowerCase();
@@ -186,7 +186,7 @@ async (conn, mek, m, { from, args, reply }) => {
             if (!/^https?:\/\//.test(value)) return reply("Valid image URL kodukku.");
             v.images.push(value);
             await save(botNumber, v);
-            return reply(`✅ Image add cheythu (ആകെ ${v.images.length})`);
+            return reply(`✅ Image add cheythu (total ${v.images.length})`);
         }
 
         if (field === 'delimg') {
