@@ -127,7 +127,7 @@ async (conn, mek, m, { from, args, reply }) => {
             .split('@')[0].split(':')[0];
 
         const isBot = mek.key.fromMe || sender === botNumber;
-        if (!isBot) return reply("ബോട്ട് നമ്പറിൽ നിന്ന് മാത്രം! 🚫");
+        if (!isBot) return reply("ADMIN ONLY CHANGE ! 🚫");
 
         const v = load();
         const field = (args[0] || '').toLowerCase();
@@ -157,7 +157,7 @@ async (conn, mek, m, { from, args, reply }) => {
             if (!/^https?:\/\//.test(value)) return reply("Valid image URL kodukku.");
             v.images.push(value);
             save(v);
-            return reply(`✅ Image add cheythu (ആകെ ${v.images.length})`);
+            return reply(`✅ Image added (ആകെ ${v.images.length})`);
         }
 
         if (field === 'delimg') {
@@ -166,7 +166,7 @@ async (conn, mek, m, { from, args, reply }) => {
             if (v.images.length === 1) return reply("Oru image enkilum venam.");
             v.images.splice(i, 1);
             save(v);
-            return reply("✅ Image remove cheythu");
+            return reply("✅ Image removed");
         }
 
         if (field === 'images') {
