@@ -1,4 +1,4 @@
-// CSONG - Send a song as a voice note/audio to a WhatsApp Channel
+// CSONG - Send a song as audio to a WhatsApp Channel or Voice Note to Chats
 // Ported from NOVA-XD (newbotoct11) to the NICK MINI BOT `cmd()` plugin system.
 // Dev Xeno Exe
 
@@ -154,7 +154,7 @@ const activeCsongRequests = new Set();
 cmd({
     pattern: "csong",
     alias: ["channelsong", "songchannel"],
-    desc: "Send a song as audio directly to a WhatsApp Channel",
+    desc: "Send a song as an audio track directly to a WhatsApp Channel",
     category: "download",
     filename: __filename
 },
@@ -267,16 +267,22 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
 
         const safeTitle = (title || "Audio").replace(/["'$`\\]/g, "");
         const safeArtist = (config.botName || "Mini Bot").replace(/["'$`\\]/g, "");
-        const baseArgs = [
+        const isNewsletter = channelJid.endsWith("@newsletter");
+
+        // Channels require standard audio format (mimetype audio/mp4), regular chats use voice note format (audio/ogg)
+        const baseArgs = isNewsletter ? [
+            "-y", "-i", inputPath, "-vn",
+            "-c:a", "aac", "-b:a", "128k",
+            "-metadata", `title=${safeTitle}`,
+            "-metadata", `artist=${safeArtist}`
+        ] : [
             "-y", "-i", inputPath, "-vn",
             "-c:a", "libopus", "-b:a", "48k", "-ac", "1", "-ar", "48000",
             "-metadata", `title=${safeTitle}`,
             "-metadata", `artist=${safeArtist}`
         ];
-        const encoderVariants = [
-            ["-application", "voip"],
-            [],
-        ];
+
+        const encoderVariants = isNewsletter ? [[]] : [["-application", "voip"], []];
 
         let voiceBuffer = null;
         let seconds = 0;
@@ -284,11 +290,20 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
         for (const extra of encoderVariants) {
             try {
                 await fs.remove(outputPath).catch(() => { });
-                const stderr = await runFfmpeg([...baseArgs, ...extra, "-f", "ogg", outputPath]);
+                const targetOutput = isNewsletter ? path.join(tmpDir, `csong_out_${uniqueId}.m4a`) : outputPath;
+                const stderr = await runFfmpeg([...baseArgs, ...extra, targetOutput]);
                 seconds = parseSeconds(stderr);
-                if (await fs.pathExists(outputPath)) {
-                    voiceBuffer = await fs.readFile(outputPath);
-                    if (voiceBuffer.length > 1000) break;
+                
+                if (await fs.pathExists(targetOutput)) {
+                    voiceBuffer = await fs.readFile(targetOutput);
+                    if (voiceBuffer.length > 1000) {
+                        // Keep reference path updated for cleanup
+                        if (isNewsletter) {
+                            // temporary reassign target path for cleanup tracking
+                            outputPath.endsWith('.opus') && (outputPath = targetOutput);
+                        }
+                        break;
+                    }
                 }
                 voiceBuffer = null;
             } catch (err) {
@@ -303,38 +318,22 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             if (typeof conn.newsletterMetadata === "function") await conn.newsletterMetadata("jid", channelJid);
         } catch (err) { /* metadata check is optional */ }
 
-        // Check if target is a WhatsApp Channel (Newsletter)
-        const isNewsletter = channelJid.endsWith("@newsletter");
-
-        if (!isNewsletter) {
-            try {
-                await conn.presenceSubscribe(channelJid).catch(() => { });
-                await conn.sendPresenceUpdate("recording", channelJid);
-                await new Promise(r => setTimeout(r, Math.min(Math.max(seconds, 2), 6) * 1000));
-            } catch (err) { /* presence is cosmetic */ }
-        }
-
-        // Send audio: Newsletters require standard audio formatting (ptt: false), chats use voice note format (ptt: true)
+        // Send payload safely based on whether target is a Channel (Newsletter) or standard chat
         const channelVoiceMsg = await conn.sendMessage(channelJid, {
             audio: voiceBuffer,
             mimetype: isNewsletter ? "audio/mp4" : "audio/ogg; codecs=opus",
-            ptt: isNewsletter ? false : true,
-            seconds,
-            fileName: `${safeTitle}.mp3`
+            ptt: !isNewsletter,
+            seconds
         });
-
-        if (!isNewsletter) {
-            await conn.sendPresenceUpdate("paused", channelJid).catch(() => { });
-        }
 
         if (!channelVoiceMsg) throw new Error("Audio was not accepted by the channel.");
 
+        // Optional: Send track title caption text as a reply inside the channel
         await new Promise(r => setTimeout(r, 1000));
         const channelCaption = `🎵 *${title}*`;
         try {
             await conn.sendMessage(channelJid, { text: channelCaption }, { quoted: channelVoiceMsg });
         } catch (err) {
-            console.error("[csong] Quoted title failed, sending plain:", err.message);
             await conn.sendMessage(channelJid, { text: channelCaption });
         }
 
@@ -347,7 +346,7 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             (duration ? `*Duration:* ${duration}\n` : ``) +
             (videoUrl ? `*URL:* ${videoUrl}\n` : ``) +
             `*Channel JID:* ${channelJid}\n` +
-            `*Format:* ${isNewsletter ? "Standard Audio Track" : "Voice Note (recorded)"}`;
+            `*Format:* ${isNewsletter ? "Audio Track (AAC/MP4)" : "Voice Note (OPUS)"}`;
 
         await conn.sendMessage(from, { text: chatDetailsText }, { quoted: mek });
 
@@ -358,5 +357,7 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
     } finally {
         if (await fs.pathExists(inputPath)) await fs.remove(inputPath).catch(() => { });
         if (await fs.pathExists(outputPath)) await fs.remove(outputPath).catch(() => { });
+        const altM4a = path.join(tmpDir, `csong_out_${uniqueId}.m4a`);
+        if (await fs.pathExists(altM4a)) await fs.remove(altM4a).catch(() => { });
     }
 });
