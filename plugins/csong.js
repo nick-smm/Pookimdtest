@@ -24,17 +24,15 @@ cmd(
     {
         pattern: 'csong',
         alias: ['channelsong', 'cplay', 'cmusic', 'voicesong'],
-        desc: 'Download a song and send it as audio to a WhatsApp channel (not DM).',
+        desc: 'Download a song and send it as a voice note to a WhatsApp channel.',
         category: 'downloader',
         react: '🎙️',
         filename: __filename,
     },
     async (conn, mek, m, { from, q, prefix }) => {
-        // react in the command chat only (status updates)
         const statusReact = async (emoji) =>
             conn.sendMessage(from, { react: { text: emoji, key: mek.key } }).catch(() => {});
 
-        // small status text in the command chat
         const statusMsg = async (text) =>
             conn.sendMessage(from, { text }, { quoted: mek }).catch(() => {});
 
@@ -46,16 +44,14 @@ cmd(
             const channelJid = parts[0] && parts[0].endsWith('@newsletter') ? parts.shift() : null;
             const songQuery  = parts.join(' ').trim();
 
-            // Usage guard
             if (!channelJid || !songQuery) {
                 return await statusMsg(
-                    `🎙️ *Channel Song Sender*\n\n` +
+                    `🎙️ *Channel Voice Note Sender*\n\n` +
                     `*Usage:*\n` +
                     `\`${prefix}csong <channelJID@newsletter> <song name or YouTube URL>\`\n\n` +
                     `*Example:*\n` +
-                    `\`${prefix}csong 120363xxxxxxxx@newsletter Faded Alan Walker\`\n` +
-                    `\`${prefix}csong 120363xxxxxxxx@newsletter https://youtu.be/xxxxx\`\n\n` +
-                    `_The song will be sent directly to the channel, not here._`
+                    `\`${prefix}csong 120363xxxxxxxx@newsletter Faded Alan Walker\`\n\n` +
+                    `_The voice note will be sent directly to the channel._`
                 );
             }
 
@@ -72,7 +68,6 @@ cmd(
             let author     = '';
             let thumbnail  = '';
 
-            // Helper: extract the best URL from a xenoytserch result object
             const resolveUrl = (item) => {
                 if (!item) return null;
                 if (item.url && item.url.startsWith('http')) return item.url;
@@ -81,15 +76,12 @@ cmd(
                 return null;
             };
 
-            // Always query xenoytserch (for metadata on URLs, and for text search)
             try {
-                const searchQ = isUrl ? songQuery : songQuery;
                 const { data: searchRes } = await axios.get(
-                    `https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(searchQ)}`,
+                    `https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(songQuery)}`,
                     { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 18000 }
                 );
 
-                // Handle both array root response and { results: [...] }
                 const results = Array.isArray(searchRes)
                     ? searchRes
                     : (searchRes?.results || searchRes?.data || []);
@@ -112,7 +104,6 @@ cmd(
                 }
             }
 
-            // ── 2. Validate video URL ───────────────────────────────
             if (!videoUrl) {
                 await statusReact('❌');
                 return await statusMsg('❌ No song results found. Try a different name or paste a YouTube link.');
@@ -134,16 +125,15 @@ cmd(
             }
 
             await statusReact('📥');
-            await statusMsg(`📥 Downloading *${title}*… will post to channel.`);
+            await statusMsg(`📥 Downloading *${title}*… sending PTT to channel.`);
 
             // ── 4. Fetch download URL ───────────────────────────────
             let downloadUrl = null;
 
-            // Primary: xenosirapis ytmp3dl
             try {
                 const { data } = await axios.get(
                     `https://xenosirapis.zone.id/api/ytmp3dl?url=${encodeURIComponent(videoUrl)}`,
-                    { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }, timeout: 35000 }
+                    { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 35000 }
                 );
                 if (data?.success && data?.downloadUrl) {
                     downloadUrl = data.downloadUrl;
@@ -153,7 +143,6 @@ cmd(
                 console.warn('[csong] xenosirapis ytmp3dl error:', err.message);
             }
 
-            // Fallback: xenoytdl-2
             if (!downloadUrl) {
                 try {
                     const { data } = await axios.get(
@@ -172,34 +161,20 @@ cmd(
                 return await statusMsg('❌ All download servers are busy. Please try again in a moment.');
             }
 
-            // ── 5. Build channel caption ────────────────────────────
+            // ── 5. Build channel caption text ───────────────────────
             const channelCaption =
                 `🎵 *${title}*\n` +
                 (author   ? `👤 ${author}\n`   : '') +
                 (duration ? `⏱️ ${duration}\n` : '') +
                 `\n> ${botName || 'Bot'}`;
 
-            // ── 6. Send thumbnail + info to channel ─────────────────
-            try {
-                if (thumbnail) {
-                    await conn.sendMessage(channelJid, {
-                        image: { url: thumbnail },
-                        caption: channelCaption,
-                    });
-                } else {
-                    await conn.sendMessage(channelJid, { text: channelCaption });
-                }
-            } catch (imgErr) {
-                console.warn('[csong] channel thumbnail send error:', imgErr.message);
-                await conn.sendMessage(channelJid, { text: channelCaption }).catch(() => {});
-            }
-
-            // ── 7. Send PTT voice/recording bubble to channel ───────
+            // ── 6. Send ONLY the Voice Note (PTT) with Thumbnail Preview to Channel ──
             await conn.sendMessage(channelJid, {
                 audio: { url: downloadUrl },
                 mimetype: 'audio/mpeg',
-                ptt: true,             // recorded voice note bubble
+                ptt: true,            // Send as a voice note bubble
                 fileName: `${title}.mp3`,
+                caption: channelCaption, // Attach description right with the voice note
                 contextInfo: {
                     externalAdReply: {
                         title: title,
@@ -213,18 +188,10 @@ cmd(
                 },
             });
 
-            // ── 8. Also send as regular MP3 to channel ──────────────
-            await conn.sendMessage(channelJid, {
-                audio: { url: downloadUrl },
-                mimetype: 'audio/mpeg',
-                fileName: `${title}.mp3`,
-                ptt: false,            // normal audio file
-            });
-
-            // ── 9. Confirm in command chat only ─────────────────────
+            // ── 7. Confirm success in the command chat only ─────────
             await statusReact('✅');
             await statusMsg(
-                `✅ *Sent to channel!*\n\n` +
+                `✅ *Voice note sent to channel successfully!*\n\n` +
                 `🎵 *${title}*\n` +
                 (author ? `👤 *Artist:* ${author}\n` : '') +
                 `📢 *Channel:* \`${channelJid}\``
