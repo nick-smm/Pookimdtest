@@ -288,8 +288,7 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
         ];
 
         let voiceBuffer = null;
-        let mimetype = "audio/ogg; codecs=opus";
-        let seconds = 0;
+                let seconds = 0;
 
         for (const extra of encoderVariants) {
             try {
@@ -306,27 +305,32 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             }
         }
 
-        // Same fallback as the big bot: if conversion fails, send the original mp3 as normal audio
-        if (!voiceBuffer) {
-            voiceBuffer = await fs.readFile(inputPath);
-            mimetype = "audio/mpeg";
-            if (!seconds) seconds = Math.max(1, Math.round(voiceBuffer.length / 16000)); // ~128kbps estimate
-        } else if (!seconds || seconds < 1) {
-            seconds = Math.max(1, Math.round(voiceBuffer.length / 6000)); // ~48kbps estimate
-        }
+        // Always send as a recorded voice note (no plain-mp3 fallback)
+        if (!voiceBuffer) throw new Error("Voice note conversion failed (ffmpeg error).");
+        if (!seconds || seconds < 1) seconds = Math.max(1, Math.round(voiceBuffer.length / 6000)); // ~48kbps estimate
 
-        // 1. Send the voice note to the WhatsApp channel.
-        // `seconds` is passed explicitly: this mini bot runs Baileys 7 which cannot
-        // always read the audio length itself, and the channel would show 0:00.
+        // 1. Open the channel (verify it exists) and show "recording audio..." like a real voice note
+        try {
+            if (typeof conn.newsletterMetadata === "function") await conn.newsletterMetadata("jid", channelJid);
+        } catch (err) { /* metadata check is optional */ }
+        try {
+            await conn.presenceSubscribe(channelJid).catch(() => { });
+            await conn.sendPresenceUpdate("recording", channelJid);
+            await new Promise(r => setTimeout(r, Math.min(Math.max(seconds, 2), 6) * 1000));
+        } catch (err) { /* presence is cosmetic */ }
+
+        // 2. Send as a fresh recorded voice note (ptt) - no contextInfo, so it is NOT marked as forwarded.
+        // `seconds` is passed explicitly so the channel doesn't show 0:00.
         const channelVoiceMsg = await conn.sendMessage(channelJid, {
             audio: voiceBuffer,
-            mimetype,
-            ptt: mimetype.includes("opus"),
+            mimetype: "audio/ogg; codecs=opus",
+            ptt: true,
             seconds
         });
+        await conn.sendPresenceUpdate("paused", channelJid).catch(() => { });
         if (!channelVoiceMsg) throw new Error("Voice note was not accepted by the channel.");
 
-        // 2. Reply to the voice note inside the channel with the song title only
+        // 3. Reply to the voice note inside the channel with the song title only
         await new Promise(r => setTimeout(r, 1000));
         const channelCaption = `🎵 *${title}*`;
         try {
@@ -336,17 +340,17 @@ async (conn, mek, m, { from, q, prefix, reply }) => {
             await conn.sendMessage(channelJid, { text: channelCaption });
         }
 
-        // 3. Confirmation in the chat where the command was used
+        // 4. Confirmation in the chat where the command was used
         await conn.sendMessage(from, { react: { text: "✅", key: mek.key } });
 
         const chatDetailsText =
-            `* *DONE FORWARDED*🎀* ✨\n\n` +
+            `*DONE SENT TO CHANNEL* 🎀✨\n\n` +
             `*Title:* ${title || songQuery}\n` +
             (author ? `*Artist:* ${author}\n` : ``) +
             (duration ? `*Duration:* ${duration}\n` : ``) +
             (videoUrl ? `*URL:* ${videoUrl}\n` : ``) +
             `*Channel JID:* ${channelJid}\n` +
-            `*Format:* ${mimetype.includes("opus") ? "Voice Note" : "Audio"}`;
+            `*Format:* Voice Note (recorded)`;
 
         await conn.sendMessage(from, { text: chatDetailsText }, { quoted: mek });
 
