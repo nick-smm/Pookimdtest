@@ -5,7 +5,8 @@
   "main": "pair.js",
   "scripts": {
     "start": "node pair.js",
-    "dev": "nodemon pair.js"
+    "dev": "nodemon pair.js",
+    "vercel-build": "echo 'Vercel serverless build complete'"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
