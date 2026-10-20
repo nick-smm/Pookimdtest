@@ -5,7 +5,7 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
-const { downloadMediaMessage } = require('baileys');
+const { downloadMediaMessage } = require('@whiskeysockets/baileys');
 
 cmd({
     pattern: 'fd',
