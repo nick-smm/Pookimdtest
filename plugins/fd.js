@@ -1,21 +1,14 @@
 const { cmd } = require('../command');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const { execFile } = require('child_process');
-const { promisify } = require('util');
-const execFileAsync = promisify(execFile);
 const { downloadMediaMessage } = require('@whiskeysockets/baileys');
 
 cmd({
     pattern: 'fd',
     alias: [],
-    desc: 'Send replied audio as voice note to a JID/channel',
+    desc: 'Send replied audio to a JID or channel',
     category: 'downloader',
     react: '🎙️',
     filename: __filename
 }, async (conn, mek, m, { from, q, args, reply }) => {
-    let tempDir;
     try {
         const targetJid = String(q || args.join(' ') || '').trim().split(/\s+/)[0];
         if (!targetJid || !/^[0-9]+@(s\.whatsapp\.net|g\.us|newsletter)$/.test(targetJid)) {
@@ -33,8 +26,7 @@ cmd({
             message: quotedMsg
         };
 
-        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fd-'));
-        await reply('🎙️ Converting & sending voice note...');
+        await reply('⏳ Downloading & sending audio...');
 
         const audioBuffer = await downloadMediaMessage(
             quotedFull,
@@ -44,31 +36,18 @@ cmd({
         );
         if (!audioBuffer || !audioBuffer.length) throw new Error('Audio download failed');
 
-        const inputFile = path.join(tempDir, 'input-audio');
-        const outputFile = path.join(tempDir, 'output.ogg');
-        fs.writeFileSync(inputFile, audioBuffer);
+        const isNewsletter = targetJid.endsWith('@newsletter');
 
-        await execFileAsync('ffmpeg', [
-            '-y', '-i', inputFile,
-            '-vn', '-map_metadata', '-1',
-            '-c:a', 'libopus', '-b:a', '128k',
-            '-vbr', 'on', '-compression_level', '10',
-            '-ar', '48000', '-ac', '1',
-            '-f', 'ogg', outputFile
-        ], { timeout: 180000 });
-
-        const buf = fs.readFileSync(outputFile);
+        // Newsletter/Channel-il PTT work aavilla, normal audio aayi send cheyyanam
         await conn.sendMessage(targetJid, {
-            audio: buf,
-            mimetype: 'audio/ogg; codecs=opus',
-            ptt: true
+            audio: audioBuffer,
+            mimetype: quotedMsg.audioMessage?.mimetype || 'audio/mp4',
+            ptt: !isNewsletter
         });
 
-        await reply('✅ Voice note successfully sent!');
+        await reply('✅ Audio successfully sent!');
     } catch (e) {
         console.log(e);
         reply(`❌ Failed: ${String(e.message || e).slice(0, 180)}`);
-    } finally {
-        if (tempDir) { try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {} }
     }
 });
