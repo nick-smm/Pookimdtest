@@ -5,7 +5,7 @@ const { cmd } = require('../command');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const DATA_FILE = path.join(DATA_DIR, 'mention.json');
-const COOLDOWN_MS = 5000; // Minimum gap between replies in the same chat
+const COOLDOWN_MS = 5000;
 
 const DEFAULTS = {
     image: 'https://xenocdn.xenocdn.workers.dev/265d504c.jpeg',
@@ -17,7 +17,6 @@ const DEFAULTS = {
 
 const lastReply = new Map();
 
-// ---------- Storage ----------
 function loadSettings() {
     try {
         if (!fs.existsSync(DATA_FILE)) return { ...DEFAULTS };
@@ -32,7 +31,6 @@ function saveSettings(settings) {
     fs.writeFileSync(DATA_FILE, JSON.stringify(settings, null, 2));
 }
 
-// ---------- Helpers ----------
 function runtime(seconds) {
     seconds = Number(seconds);
     const d = Math.floor(seconds / (3600 * 24));
@@ -42,7 +40,6 @@ function runtime(seconds) {
     return `${d}d ${h}h ${m}m ${s}s`;
 }
 
-// Only bot owner or group admins/superadmins can edit settings
 async function canChange(conn, from, sender, isOwner) {
     if (isOwner) return true;
     if (!from.endsWith('@g.us')) return false;
@@ -55,7 +52,6 @@ async function canChange(conn, from, sender, isOwner) {
     }
 }
 
-// Get contextInfo regardless of message type (ephemeral, view-once, etc.)
 function getContextInfo(message) {
     if (!message) return {};
     const inner = message.ephemeralMessage?.message || message.viewOnceMessage?.message || message;
@@ -106,19 +102,18 @@ ${s.link ? `\nʟɪɴᴋ : ${s.link}` : ''}
     }, { quoted: mek });
 }
 
-// ---------- 1) Mention trigger (works in every chat) ----------
 cmd({
     on: 'body',
     filename: __filename
 },
 async (conn, mek, m, { from, pushname, body }) => {
     try {
-        if (mek.key.fromMe) return; // Ignore messages sent by the bot itself
+        if (mek.key.fromMe) return;
         if (!isBotMentioned(conn, mek, body)) return;
 
         const now = Date.now();
         const last = lastReply.get(from) || 0;
-        if (now - last < COOLDOWN_MS) return; // Anti-spam
+        if (now - last < COOLDOWN_MS) return;
         lastReply.set(from, now);
 
         await sendAlive(conn, from, mek, pushname);
@@ -127,13 +122,6 @@ async (conn, mek, m, { from, pushname, body }) => {
     }
 });
 
-// ---------- 2) Admin/owner-only editor ----------
-// .setalive image <url>
-// .setalive song <url>      (direct .opus / .mp3 link)
-// .setalive text <text>
-// .setalive body <text>     (use \n for a new line)
-// .setalive link <url|none>
-// .setalive show
 cmd({
     pattern: 'setalive',
     desc: 'Edit the mention reply (admin only)',
@@ -144,4 +132,49 @@ cmd({
 async (conn, mek, m, { from, sender, args, pushname, isOwner, reply }) => {
     try {
         if (!(await canChange(conn, from, sender, isOwner))) {
-            return reply('❌ Only group admins can use this
+            return reply('Only group admins can use this command.');
+        }
+
+        const key = (args[0] || '').toLowerCase();
+        const value = args.slice(1).join(' ').trim();
+        const valid = ['image', 'song', 'text', 'body', 'link', 'show'];
+
+        if (!valid.includes(key)) {
+            return reply(
+                '*Usage:*\n' +
+                '.setalive image <url>\n' +
+                '.setalive song <url>\n' +
+                '.setalive text <text>\n' +
+                '.setalive body <text>\n' +
+                '.setalive link <url|none>\n' +
+                '.setalive show'
+            );
+        }
+
+        if (key === 'show') {
+            return await sendAlive(conn, from, mek, pushname);
+        }
+
+        if (!value) return reply(`Please provide a value for ${key}.`);
+
+        if ((key === 'image' || key === 'song' || key === 'link') &&
+            value.toLowerCase() !== 'none' && !/^https?:\/\//i.test(value)) {
+            return reply('Please provide a valid URL (http/https).');
+        }
+
+        const s = loadSettings();
+        if (key === 'link') {
+            s.link = value.toLowerCase() === 'none' ? '' : value;
+        } else if (key === 'body') {
+            s.body = value.replace(/\\n/g, '\n');
+        } else {
+            s[key] = value;
+        }
+
+        saveSettings(s);
+        return reply(`${key} updated. The next mention will show the new card.`);
+    } catch (e) {
+        console.error('setalive error:', e);
+        return reply(`Error: ${e.message}`);
+    }
+});
