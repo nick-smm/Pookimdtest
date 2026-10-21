@@ -60,11 +60,16 @@ function getContextInfo(message) {
 }
 
 function isBotMentioned(conn, mek, body) {
-    const botNum = conn.user.id.split(':')[0];
+    const ids = [conn.user.id, conn.user.lid]
+        .filter(Boolean)
+        .map(j => j.split(':')[0].split('@')[0]);
+
     const ctx = getContextInfo(mek.message);
     const mentioned = ctx.mentionedJid || [];
-    const byJid = mentioned.some(j => j.split('@')[0].split(':')[0] === botNum);
-    const byText = (body || '').includes('@' + botNum);
+
+    const byJid = mentioned.some(j => ids.includes(j.split(':')[0].split('@')[0]));
+    const byText = ids.some(id => (body || '').includes('@' + id));
+
     return byJid || byText;
 }
 
@@ -107,6 +112,7 @@ cmd({
     filename: __filename
 },
 async (conn, mek, m, { from, pushname, body }) => {
+    console.log('[mention] from:', from, 'mentioned:', JSON.stringify(getContextInfo(mek.message).mentionedJid), 'bot:', conn.user.id);
     try {
         if (mek.key.fromMe) return;
         if (!isBotMentioned(conn, mek, body)) return;
@@ -123,7 +129,7 @@ async (conn, mek, m, { from, pushname, body }) => {
 });
 
 cmd({
-    pattern: 'setalive',
+    pattern: 'setmention',
     desc: 'Edit the mention reply (admin only)',
     category: 'main',
     react: '⚙️',
@@ -142,12 +148,12 @@ async (conn, mek, m, { from, sender, args, pushname, isOwner, reply }) => {
         if (!valid.includes(key)) {
             return reply(
                 '*Usage:*\n' +
-                '.setalive image <url>\n' +
-                '.setalive song <url>\n' +
-                '.setalive text <text>\n' +
-                '.setalive body <text>\n' +
-                '.setalive link <url|none>\n' +
-                '.setalive show'
+                '.setmention image <url>\n' +
+                '.setmention song <url>\n' +
+                '.setmention text <text>\n' +
+                '.setmention body <text>\n' +
+                '.setmention link <url|none>\n' +
+                '.setmention show'
             );
         }
 
@@ -174,7 +180,7 @@ async (conn, mek, m, { from, sender, args, pushname, isOwner, reply }) => {
         saveSettings(s);
         return reply(`${key} updated. The next mention will show the new card.`);
     } catch (e) {
-        console.error('setalive error:', e);
+        console.error('setmention error:', e);
         return reply(`Error: ${e.message}`);
     }
 });
