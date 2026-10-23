@@ -102,7 +102,7 @@ async (conn, mek, m, { from, q, prefix }) => {
         let downloadUrl = null;
 
         try {
-            const dlApi = `https://xenosirapis.zone.id/api/ytmp3dl?url=${encodeURIComponent(videoUrl)}`;
+            const dlApi = `https://jerrycoder.oggyapi.workers.dev/down/ytmp3?url=${encodeURIComponent(videoUrl)}`;
             const { data } = await axios.get(dlApi, {
                 headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
                 timeout: 30000
@@ -119,7 +119,7 @@ async (conn, mek, m, { from, q, prefix }) => {
         // Fallback 1: xenoytdl-2
         if (!downloadUrl) {
             try {
-                const { data } = await axios.get(`https://xenoytdl-2.vercel.app/api/youtube?url=${encodeURIComponent(videoUrl)}&format=mp3`, {
+                const { data } = await axios.get(`https://jerrycoder.oggyapi.workers.dev/down/ytmp3?url=${encodeURIComponent(videoUrl)}&format=mp3`, {
                     headers: { 'User-Agent': 'Mozilla/5.0' },
                     timeout: 20000
                 });
