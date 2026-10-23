@@ -2,7 +2,138 @@ const { cmd } = require('../command');
 const axios = require('axios');
 
 const BOT_NAME = "𝑳𝜺𝝂𝜾⃮⃯⃔𝜶𝜼𝝄♪";
+const UA = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36' };
+const MAX_BYTES = 60 * 1024 * 1024; // 60MB
 
+const YT_ID = /(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|embed\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/i;
+
+// ---------- helpers ----------
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Find a download link in whatever shape an API returns
+function findDownloadUrl(o, depth = 0) {
+    if (!o || typeof o !== 'object' || depth > 4) return null;
+    const keys = ['downloadUrl', 'download_url', 'download', 'dl', 'dl_url', 'link', 'audio', 'mp3', 'url'];
+    for (const k of keys) {
+        const v = o[k];
+        if (typeof v === 'string' && /^https?:\/\//i.test(v)) {
+            if (k === 'url' && /youtube\.com|youtu\.be/i.test(v)) continue; // that's the source, not the file
+            return v;
+        }
+        if (v && typeof v === 'object') {
+            const r = findDownloadUrl(v, depth + 1);
+            if (r) return r;
+        }
+    }
+    for (const k of ['result', 'data', 'results', 'response']) {
+        const r = findDownloadUrl(o[k], depth + 1);
+        if (r) return r;
+    }
+    return null;
+}
+
+function findTitle(o) {
+    return o?.title || o?.result?.title || o?.data?.title || null;
+}
+
+// ---------- search ----------
+async function searchVideo(query) {
+    // 1) API
+    try {
+        const { data } = await axios.get(
+            `https://xenosirapis.zone.id/api/ytsearch?query=${encodeURIComponent(query)}`,
+            { headers: UA, timeout: 15000 }
+        );
+        const list = data?.results || data?.result || data?.data;
+        const first = Array.isArray(list) ? list[0] : null;
+        if (first) {
+            const url = first.url || (first.videoId ? `https://www.youtube.com/watch?v=${first.videoId}` : null);
+            if (url) return {
+                url,
+                title: first.title || query,
+                thumbnail: first.thumbnail || first.image || "",
+            };
+        }
+    } catch (e) { console.warn("API search failed:", e.message); }
+
+    // 2) local yt-search (no API needed)
+    try {
+        const yts = require('yt-search');
+        const r = await yts(query);
+        const v = r?.videos?.[0];
+        if (v) return { url: v.url, title: v.title, thumbnail: v.thumbnail || "" };
+    } catch (e) { console.warn("yt-search failed:", e.message); }
+
+    return null;
+}
+
+// ---------- download ----------
+async function fetchBuffer(url) {
+    const res = await axios.get(url, {
+        responseType: 'arraybuffer',
+        headers: UA,
+        timeout: 90000,
+        maxRedirects: 5,
+        maxContentLength: MAX_BYTES,
+        maxBodyLength: MAX_BYTES,
+    });
+    const buf = Buffer.from(res.data);
+    if (buf.length < 10 * 1024) throw new Error("Downloaded file too small (probably an error page)");
+    return buf;
+}
+
+// API providers: add more here, they are tried in order
+const PROVIDERS = [
+    v => `https://xenosirapis.zone.id/api/ytmp3dl?url=${encodeURIComponent(v)}`,
+    v => `https://xenosirapis.zone.id/api/ytmp3dl?url=${encodeURIComponent(v)}&format=mp3`,
+];
+
+async function downloadViaApis(videoUrl) {
+    for (const build of PROVIDERS) {
+        for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+                const { data } = await axios.get(build(videoUrl), { headers: UA, timeout: 30000 });
+                const link = findDownloadUrl(data);
+                if (!link) throw new Error("No download link in response");
+                const buffer = await fetchBuffer(link);
+                return { buffer, mimetype: "audio/mpeg", title: findTitle(data) };
+            } catch (e) {
+                console.warn("API download failed:", e.message);
+                await sleep(1000);
+            }
+        }
+    }
+    return null;
+}
+
+async function downloadViaYtdl(videoUrl) {
+    try {
+        const ytdl = require('@distube/ytdl-core');
+        const info = await ytdl.getInfo(videoUrl);
+        const format = ytdl.chooseFormat(info.formats, {
+            quality: 'highestaudio',
+            filter: f => f.hasAudio && !f.hasVideo && f.container === 'mp4',
+        });
+        const chunks = [];
+        let size = 0;
+        await new Promise((resolve, reject) => {
+            const stream = ytdl.downloadFromInfo(info, { format });
+            stream.on('data', c => {
+                size += c.length;
+                if (size > MAX_BYTES) { stream.destroy(); return reject(new Error("File too large")); }
+                chunks.push(c);
+            });
+            stream.on('end', resolve);
+            stream.on('error', reject);
+        });
+        return { buffer: Buffer.concat(chunks), mimetype: "audio/mp4", title: info.videoDetails?.title };
+    } catch (e) {
+        console.warn("ytdl fallback failed:", e.message);
+        return null;
+    }
+}
+
+// ---------- command ----------
 cmd({
     pattern: "song",
     alias: ["play", "mp3", "music"],
@@ -12,6 +143,7 @@ cmd({
     filename: __filename
 },
 async (conn, mek, m, { from, q, prefix }) => {
+    const react = emoji => conn.sendMessage(from, { react: { text: emoji, key: mek.key } }).catch(() => {});
     try {
         if (!q) {
             return await conn.sendMessage(from, {
@@ -19,156 +151,59 @@ async (conn, mek, m, { from, q, prefix }) => {
             }, { quoted: mek });
         }
 
-        await conn.sendMessage(from, { react: { text: "🔍", key: mek.key } });
+        await react("🔍");
 
         const query = q.trim();
-        const isUrl = /^(https?:\/\/)?(www\.)?(youtube\.com\/[^\s]+|youtu\.be\/[^\s]+)$/i.test(query);
+        const idMatch = query.match(YT_ID);
+        let videoUrl, title = "Song", thumbnail = "";
 
-        let videoUrl = isUrl ? query : null;
-        let title = "Song";
-        let duration = "";
-        let author = "";
-        let thumbnail = "";
-
-        // If not a direct YouTube URL, search using xenosirapis ytsearch
-        if (!isUrl) {
-            try {
-                const searchApi = `https://xenosirapis.zone.id/api/ytsearch?query=${encodeURIComponent(query)}`;
-                const { data } = await axios.get(searchApi, {
-                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-                    timeout: 20000
-                });
-
-                if (data && data.results && data.results.length > 0) {
-                    const first = data.results[0];
-                    videoUrl = first.url || (first.videoId ? `https://www.youtube.com/watch?v=${first.videoId}` : null);
-                    title = first.title || query;
-                    duration = first.duration || "";
-                    author = first.author || "";
-                    thumbnail = first.thumbnail || "";
-                }
-            } catch (searchErr) {
-                console.warn("xenosirapis ytsearch error, trying fallback:", searchErr.message);
-            }
-
-            // Fallback: xenoytserch
-            if (!videoUrl) {
-                try {
-                    const fallbackUrl = `https://xenoytserch.vercel.app/api/ytsearch?q=${encodeURIComponent(query)}`;
-                    const { data } = await axios.get(fallbackUrl, {
-                        headers: { 'User-Agent': 'Mozilla/5.0' },
-                        timeout: 10000
-                    });
-                    if (data?.results?.length > 0) {
-                        const first = data.results[0];
-                        videoUrl = first.url || (first.videoId ? `https://www.youtube.com/watch?v=${first.videoId}` : null);
-                        title = first.title || query;
-                        duration = first.duration || "";
-                        author = typeof first.author === 'object' ? first.author?.name : (first.author || "");
-                        thumbnail = first.thumbnail || "";
-                    }
-                } catch (err) {}
-            }
-
-            if (!videoUrl) {
-                await conn.sendMessage(from, { react: { text: "❌", key: mek.key } });
-                return await conn.sendMessage(from, { text: " No song results found for your search." }, { quoted: mek });
-            }
-        }
-
-        // If no thumbnail yet (direct link or missing), build it from the video id
-        if (!thumbnail && videoUrl) {
-            const idMatch = videoUrl.match(/(?:v=|youtu\.be\/|shorts\/)([A-Za-z0-9_-]{11})/);
-            if (idMatch) thumbnail = `https://i.ytimg.com/vi/${idMatch[1]}/hqdefault.jpg`;
-        }
-
-        // React and send thumbnail + title + bot name watermark
-        await conn.sendMessage(from, { react: { text: "📥", key: mek.key } });
-        const captionText = `*Downloading :* ${title}\n\n> ${BOT_NAME}`;
-        if (thumbnail) {
-            try {
-                await conn.sendMessage(from, {
-                    image: { url: thumbnail },
-                    caption: captionText
-                }, { quoted: mek });
-            } catch (imgErr) {
-                await conn.sendMessage(from, { text: captionText }, { quoted: mek });
-            }
+        if (idMatch) {
+            videoUrl = `https://www.youtube.com/watch?v=${idMatch[1]}`;
+            thumbnail = `https://i.ytimg.com/vi/${idMatch[1]}/hqdefault.jpg`;
         } else {
-            await conn.sendMessage(from, { text: captionText }, { quoted: mek });
-        }
-
-        // Retrieve download URL using xenosirapis ytmp3dl
-        let downloadUrl = null;
-
-        try {
-            const dlApi = `https://xenosirapis.zone.id/api/ytmp3dl?url=${encodeURIComponent(videoUrl)}`;
-            const { data } = await axios.get(dlApi, {
-                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-                timeout: 30000
-            });
-
-            if (data && data.success && data.downloadUrl) {
-                downloadUrl = data.downloadUrl;
-                if (data.title && title === "Song") title = data.title;
+            const found = await searchVideo(query);
+            if (!found) {
+                await react("❌");
+                return await conn.sendMessage(from, { text: "No song results found for your search." }, { quoted: mek });
             }
-        } catch (dlErr) {
-            console.warn("xenosirapis ytmp3dl error, trying fallback:", dlErr.message);
+            ({ url: videoUrl, title, thumbnail } = found);
         }
 
-        // Fallback 1: xenoytdl-2
-        if (!downloadUrl) {
-            try {
-                const { data } = await axios.get(`https://xenosirapis.zone.id/api/ytmp3dl?url=${encodeURIComponent(videoUrl)}&format=mp3`, {
-                    headers: { 'User-Agent': 'Mozilla/5.0' },
-                    timeout: 20000
-                });
-                downloadUrl = data?.download;
-                if (data?.title && title === "Song") title = data.title;
-            } catch (err) {}
+        await react("📥");
+        const caption = `*Downloading :* ${title}\n\n> ${BOT_NAME}`;
+        try {
+            if (thumbnail) await conn.sendMessage(from, { image: { url: thumbnail }, caption }, { quoted: mek });
+            else await conn.sendMessage(from, { text: caption }, { quoted: mek });
+        } catch {
+            await conn.sendMessage(from, { text: caption }, { quoted: mek }).catch(() => {});
         }
 
-        // Fallback 2: oggyapi
-        if (!downloadUrl) {
-            try {
-                const { data } = await axios.get(`https://xenosirapis.zone.id/api/ytmp3dl?url=${encodeURIComponent(videoUrl)}`, {
-                    headers: { 'User-Agent': 'Mozilla/5.0' },
-                    timeout: 25000
-                });
-                const resData = data?.result || data?.data || data;
-                downloadUrl = resData?.download || resData?.downloadURL || resData?.download_url || resData?.url || resData?.dl_url;
-                if (resData?.title && title === "Song") title = resData.title;
-            } catch (err) {}
+        // Try APIs first, then local ytdl
+        const result = (await downloadViaApis(videoUrl)) || (await downloadViaYtdl(videoUrl));
+
+        if (!result) {
+            await react("❌");
+            return await conn.sendMessage(from, {
+                text: "Failed to download the audio. All servers are busy or blocked, try again in a moment."
+            }, { quoted: mek });
         }
 
-        if (!downloadUrl) {
-            await conn.sendMessage(from, { react: { text: "❌", key: mek.key } });
-            return await conn.sendMessage(from, { text: "Failed to retrieve download link from audio servers." }, { quoted: mek });
-        }
+        if (title === "Song" && result.title) title = result.title;
+        const safeName = title.replace(/[\\/:*?"<>|]/g, '').slice(0, 80) || "song";
+        const ext = result.mimetype === "audio/mp4" ? "m4a" : "mp3";
 
         await conn.sendMessage(from, {
-            audio: { url: downloadUrl },
-            mimetype: "audio/mpeg",
-            fileName: `${title}.mp3`,
+            audio: result.buffer,
+            mimetype: result.mimetype,
+            fileName: `${safeName}.${ext}`,
             ptt: false,
-            contextInfo: {
-                externalAdReply: {
-                    title: title,
-                    body: BOT_NAME,
-                    thumbnailUrl: thumbnail || undefined,
-                    sourceUrl: videoUrl,
-                    mediaType: 1,
-                    renderLargerThumbnail: true,
-                    showAdAttribution: false
-                }
-            }
         }, { quoted: mek });
 
-        await conn.sendMessage(from, { react: { text: "✅", key: mek.key } });
+        await react("✅");
 
     } catch (e) {
         console.error("Song Command Error:", e);
-        await conn.sendMessage(from, { react: { text: "❌", key: mek.key } });
-        await conn.sendMessage(from, { text: `❌ Error: ${e.message || e}` }, { quoted: mek });
+        await react("❌");
+        await conn.sendMessage(from, { text: `❌ Error: ${e.message || e}` }, { quoted: mek }).catch(() => {});
     }
 });
